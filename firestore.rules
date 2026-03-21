@@ -1,0 +1,138 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: users
+// Document ID: {userId}
+// Fields:
+//   - uid: string (required, immutable) - The user's unique ID
+//   - displayName: string (optional) - The user's display name
+//   - email: string (required, immutable) - The user's email address
+//   - photoURL: string (optional) - The user's profile picture URL
+//   - createdAt: timestamp (required, immutable) - When the user profile was created
+//   - totalLessons: number (required) - Total number of lessons completed
+//   - avgWpm: number (required) - Average words per minute
+//   - avgAccuracy: number (required) - Average typing accuracy
+//   - weakKeys: string (required) - JSON stringified map of characters to error counts
+//
+// Collection: users/{userId}/lessons
+// Document ID: {lessonId}
+// Fields:
+//   - uid: string (required, immutable) - The user's unique ID who completed the lesson
+//   - createdAt: timestamp (required, immutable) - When the lesson was completed
+//   - text: string (required, immutable) - The text that was typed
+//   - wpm: number (required, immutable) - Words per minute achieved
+//   - accuracy: number (required, immutable) - Accuracy achieved (0-100)
+//   - duration: number (required, immutable) - Time taken in seconds
+//   - mistakes: string (required, immutable) - JSON stringified map of characters to error counts in this lesson
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.uid;
+    }
+    
+    function uidUnchanged() {
+      return !('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid;
+    }
+    
+    function uidNotModified() {
+      return !('uid' in request.resource.data) || request.resource.data.uid == resource.data.uid;
+    }
+    
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+    
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+    
+    function isValidUrl(url) {
+      return url is string && (url.matches("^https://.*") || url.matches("^http://.*"));
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    
+    function isValidUserProfile(data) {
+      return hasRequiredFields(['uid', 'email', 'createdAt', 'totalLessons', 'avgWpm', 'avgAccuracy', 'weakKeys']) &&
+             data.uid is string && data.uid.size() > 0 && data.uid.size() < 100 &&
+             data.email is string && isValidEmail(data.email) && data.email.size() < 200 &&
+             data.createdAt is timestamp &&
+             data.totalLessons is number && data.totalLessons >= 0 &&
+             data.avgWpm is number && data.avgWpm >= 0 &&
+             data.avgAccuracy is number && data.avgAccuracy >= 0 && data.avgAccuracy <= 100 &&
+             data.weakKeys is string && data.weakKeys.size() < 10000 &&
+             (!('displayName' in data) || (data.displayName is string && data.displayName.size() < 100)) &&
+             (!('photoURL' in data) || (data.photoURL is string && isValidUrl(data.photoURL) && data.photoURL.size() < 1000));
+    }
+    
+    function isValidTypingLesson(data) {
+      return hasRequiredFields(['uid', 'createdAt', 'text', 'wpm', 'accuracy', 'duration', 'mistakes']) &&
+             data.uid is string && data.uid.size() > 0 && data.uid.size() < 100 &&
+             data.createdAt is timestamp &&
+             data.text is string && data.text.size() > 0 && data.text.size() < 10000 &&
+             data.wpm is number && data.wpm >= 0 &&
+             data.accuracy is number && data.accuracy >= 0 && data.accuracy <= 100 &&
+             data.duration is number && data.duration >= 0 &&
+             data.mistakes is string && data.mistakes.size() < 10000;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      // Only the owner can read their own profile (contains email)
+      allow read: if isOwner(userId);
+      
+      // Owner can create their profile
+      allow create: if isOwner(userId) && 
+                       isValidUserProfile(request.resource.data) && 
+                       uidUnchanged();
+                       
+      // Owner can update their profile
+      allow update: if isOwner(userId) && 
+                       isValidUserProfile(request.resource.data) && 
+                       uidNotModified() &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       request.resource.data.email == resource.data.email;
+                       
+      allow delete: if false; // Deletion not supported from client
+      
+      match /lessons/{lessonId} {
+        // Only the owner can read their lessons
+        allow read: if isOwner(userId);
+        
+        // Owner can create a lesson
+        allow create: if isOwner(userId) && 
+                         isValidTypingLesson(request.resource.data) && 
+                         uidUnchanged() &&
+                         request.resource.data.uid == userId;
+                         
+        // Lessons are immutable once created
+        allow update: if false;
+        
+        allow delete: if false;
+      }
+    }
+  }
+}

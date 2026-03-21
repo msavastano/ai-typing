@@ -1,0 +1,5 @@
+{
+  "name": "AI Typing Tutor",
+  "description": "An AI-powered typing tutor that generates personalized lessons based on your typing data.",
+  "requestFramePermissions": []
+}
