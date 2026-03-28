@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Next.js Dev Server",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["node_modules/next/dist/bin/next", "dev"],
+      "port": 3000
+    },
+    {
+      "name": "Firebase Emulators",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["node_modules/.bin/firebase", "emulators:start"],
+      "port": 4000
+    }
+  ]
+}

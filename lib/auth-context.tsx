@@ -41,7 +41,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             totalLessons: 0,
             avgWpm: 0,
             avgAccuracy: 0,
-            weakKeys: '{}',
+            weakKeys: {},
+            bigrams: {},
+            topic: 'general',
           });
         }
       }

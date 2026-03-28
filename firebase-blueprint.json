@@ -42,10 +42,18 @@
         },
         "weakKeys": {
           "type": "string",
-          "description": "JSON stringified map of characters to error counts."
+          "description": "JSON stringified map of characters to error counts. Decayed by 0.7x each session."
+        },
+        "bigrams": {
+          "type": "string",
+          "description": "JSON stringified map of 'expected→typed' key-pair confusions to counts. Decayed by 0.7x each session."
+        },
+        "topic": {
+          "type": "string",
+          "description": "User's preferred topic for AI-generated lessons (e.g., general, technology, programming)."
         }
       },
-      "required": ["uid", "email", "createdAt", "totalLessons", "avgWpm", "avgAccuracy", "weakKeys"]
+      "required": ["uid", "email", "createdAt", "totalLessons", "avgWpm", "avgAccuracy", "weakKeys", "bigrams", "topic"]
     },
     "TypingLesson": {
       "title": "TypingLesson",
@@ -80,9 +88,13 @@
         "mistakes": {
           "type": "string",
           "description": "JSON stringified map of characters to error counts in this lesson."
+        },
+        "bigrams": {
+          "type": "string",
+          "description": "JSON stringified map of 'expected→typed' key-pair confusions in this lesson."
         }
       },
-      "required": ["uid", "createdAt", "text", "wpm", "accuracy", "duration", "mistakes"]
+      "required": ["uid", "createdAt", "text", "wpm", "accuracy", "duration", "mistakes", "bigrams"]
     }
   },
   "firestore": {

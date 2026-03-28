@@ -13,7 +13,8 @@
 //   - totalLessons: number (required) - Total number of lessons completed
 //   - avgWpm: number (required) - Average words per minute
 //   - avgAccuracy: number (required) - Average typing accuracy
-//   - weakKeys: string (required) - JSON stringified map of characters to error counts
+//   - weakKeys: map (required) - Map of characters to error counts
+//   - bigrams: map (required) - Map of key confusion pairs to error counts
 //
 // Collection: users/{userId}/lessons
 // Document ID: {lessonId}
@@ -24,7 +25,8 @@
 //   - wpm: number (required, immutable) - Words per minute achieved
 //   - accuracy: number (required, immutable) - Accuracy achieved (0-100)
 //   - duration: number (required, immutable) - Time taken in seconds
-//   - mistakes: string (required, immutable) - JSON stringified map of characters to error counts in this lesson
+//   - mistakes: map (required, immutable) - Map of characters to error counts in this lesson
+//   - bigrams: map (required, immutable) - Map of key confusion pairs to error counts in this lesson
 //
 // ===============================================================
 
@@ -80,11 +82,12 @@ service cloud.firestore {
              data.totalLessons is number && data.totalLessons >= 0 &&
              data.avgWpm is number && data.avgWpm >= 0 &&
              data.avgAccuracy is number && data.avgAccuracy >= 0 && data.avgAccuracy <= 100 &&
-             data.weakKeys is string && data.weakKeys.size() < 10000 &&
+             (data.weakKeys is map || data.weakKeys is string) &&
+             (!('bigrams' in data) || data.bigrams is map || data.bigrams is string) &&
              (!('displayName' in data) || (data.displayName is string && data.displayName.size() < 100)) &&
              (!('photoURL' in data) || (data.photoURL is string && isValidUrl(data.photoURL) && data.photoURL.size() < 1000));
     }
-    
+
     function isValidTypingLesson(data) {
       return hasRequiredFields(['uid', 'createdAt', 'text', 'wpm', 'accuracy', 'duration', 'mistakes']) &&
              data.uid is string && data.uid.size() > 0 && data.uid.size() < 100 &&
@@ -93,7 +96,8 @@ service cloud.firestore {
              data.wpm is number && data.wpm >= 0 &&
              data.accuracy is number && data.accuracy >= 0 && data.accuracy <= 100 &&
              data.duration is number && data.duration >= 0 &&
-             data.mistakes is string && data.mistakes.size() < 10000;
+             (data.mistakes is map || data.mistakes is string) &&
+             (!('bigrams' in data) || data.bigrams is map || data.bigrams is string);
     }
 
     // ===============================================================

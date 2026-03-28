@@ -1,1 +1,39 @@
 @import "tailwindcss";
+
+@keyframes error-pop {
+  0% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-2rem);
+  }
+}
+
+.animate-error-pop {
+  animation: error-pop 0.6s ease-out forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-error-pop {
+    animation: none;
+    display: none;
+  }
+
+  .animate-pulse {
+    animation: none;
+  }
+
+  .animate-spin {
+    animation: none;
+  }
+
+  .animate-in {
+    animation: none !important;
+  }
+
+  * {
+    transition-duration: 0.01ms !important;
+  }
+}
