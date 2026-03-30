@@ -2,7 +2,7 @@
 
 import { useAuth } from '@/lib/auth-context';
 import { Button } from '@/components/ui/button';
-import { Keyboard, LogOut, Loader2, Play, Activity, Target, Trophy, ShieldCheck } from 'lucide-react';
+import { Keyboard, LogOut, Loader2, Play, Activity, Target, Trophy, ShieldCheck, Volume2, Moon } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { doc, onSnapshot, updateDoc, collection, query, orderBy, limit } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
@@ -64,6 +64,8 @@ export default function Home() {
   const [isTyping, setIsTyping] = useState(false);
   const [topic, setTopic] = useState('general');
   const [strictMode, setStrictMode] = useState(false);
+  const [audioEnabled, setAudioEnabled] = useState(false);
+  const [calmMode, setCalmMode] = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -74,6 +76,8 @@ export default function Home() {
         setStats(data);
         if (data.topic) setTopic(data.topic);
         if (data.strictMode !== undefined) setStrictMode(data.strictMode);
+        if (data.audioEnabled !== undefined) setAudioEnabled(data.audioEnabled);
+        if (data.calmMode !== undefined) setCalmMode(data.calmMode);
       }
     });
 
@@ -105,6 +109,22 @@ export default function Home() {
     setStrictMode(newValue);
     if (user) {
       await updateDoc(doc(db, 'users', user.uid), { strictMode: newValue });
+    }
+  };
+
+  const handleAudioToggle = async () => {
+    const newValue = !audioEnabled;
+    setAudioEnabled(newValue);
+    if (user) {
+      await updateDoc(doc(db, 'users', user.uid), { audioEnabled: newValue });
+    }
+  };
+
+  const handleCalmModeToggle = async () => {
+    const newValue = !calmMode;
+    setCalmMode(newValue);
+    if (user) {
+      await updateDoc(doc(db, 'users', user.uid), { calmMode: newValue });
     }
   };
 
@@ -171,6 +191,8 @@ export default function Home() {
             totalLessons={stats?.totalLessons || 0}
             topic={topic}
             strictMode={strictMode}
+            audioEnabled={audioEnabled}
+            calmMode={calmMode}
             onComplete={() => setIsTyping(false)}
             onCancel={() => setIsTyping(false)}
           />
@@ -280,6 +302,52 @@ export default function Home() {
                 <span
                   className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition-transform duration-200 mt-1 ${
                     strictMode ? 'translate-x-6 ml-0.5' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* Audio feedback toggle */}
+            <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Volume2 className={`h-5 w-5 ${audioEnabled ? 'text-emerald-500' : 'text-zinc-500'}`} />
+                <div>
+                  <h3 className="text-lg font-semibold">Audio Feedback</h3>
+                  <p className="text-sm text-zinc-400">Play subtle sounds on keystrokes and errors to anchor focus</p>
+                </div>
+              </div>
+              <button
+                onClick={handleAudioToggle}
+                className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full transition-colors duration-200 ${
+                  audioEnabled ? 'bg-emerald-600' : 'bg-zinc-700'
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition-transform duration-200 mt-1 ${
+                    audioEnabled ? 'translate-x-6 ml-0.5' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* Calm mode toggle */}
+            <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Moon className={`h-5 w-5 ${calmMode ? 'text-emerald-500' : 'text-zinc-500'}`} />
+                <div>
+                  <h3 className="text-lg font-semibold">Calm Mode</h3>
+                  <p className="text-sm text-zinc-400">Minimal interface with no animations — less visual noise, more focus</p>
+                </div>
+              </div>
+              <button
+                onClick={handleCalmModeToggle}
+                className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full transition-colors duration-200 ${
+                  calmMode ? 'bg-emerald-600' : 'bg-zinc-700'
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition-transform duration-200 mt-1 ${
+                    calmMode ? 'translate-x-6 ml-0.5' : 'translate-x-1'
                   }`}
                 />
               </button>

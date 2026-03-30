@@ -1,7 +1,12 @@
 node_modules/
 .next/
+out/
 coverage/
 .DS_Store
 *.log
 .env*
 !.env.example
+tsconfig.tsbuildinfo
+.firebase/
+.claude/settings.local.json
+.vercel

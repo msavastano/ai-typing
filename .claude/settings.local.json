@@ -10,7 +10,8 @@
       "mcp__chrome-devtools__take_snapshot",
       "ReadFile",
       "Bash(npm install:*)",
-      "Bash(npx vitest:*)"
+      "Bash(npx vitest:*)",
+      "Bash(npx tsc:*)"
     ]
   },
   "enableAllProjectMcpServers": true,

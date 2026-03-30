@@ -1,4 +1,12 @@
 {
+  "hosting": {
+    "source": ".",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ]
+  },
   "firestore": {
     "rules": "firestore.rules",
     "database": "ai-studio-c1563f4b-46bd-4182-8920-9f70f2c51c2c"

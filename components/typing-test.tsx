@@ -16,6 +16,7 @@ import {
   updateRunningAverage,
   mergeWithDecay,
 } from '@/lib/typing-metrics';
+import { playCorrectSound, playErrorSound, playStreakSound } from '@/lib/audio';
 
 const FALLBACK_TEXTS = [
   "The quick brown fox jumps over the lazy dog near the old stone bridge. Every morning, sunlight filters through the tall oak trees and warms the quiet meadow below.",
@@ -30,6 +31,23 @@ const FALLBACK_TEXTS = [
   "The ancient library of Alexandria was once the greatest center of knowledge in the world. Scholars traveled from distant lands to study its vast collection of scrolls and manuscripts.",
 ];
 
+// Variable-ratio reinforcement: reward at unpredictable intervals (10-30 range)
+function generateComboThreshold(): number {
+  return Math.floor(Math.random() * 21) + 10;
+}
+
+// Focus decay: if rolling CV of keystroke intervals exceeds this, nudge
+const FOCUS_WINDOW = 15; // last N keystrokes
+const FOCUS_CV_THRESHOLD = 1.2; // coefficient of variation threshold
+const FOCUS_COOLDOWN_MS = 30_000; // don't nudge more than once per 30s
+const FOCUS_NUDGES = [
+  'Take a breath — you\'ve got this.',
+  'Slow and steady wins the race.',
+  'Try relaxing your shoulders.',
+  'Pause if you need to — no rush.',
+  'Focus on one key at a time.',
+];
+
 interface TypingTestProps {
   weakKeys: Record<string, number>;
   bigrams: Record<string, number>;
@@ -38,11 +56,13 @@ interface TypingTestProps {
   totalLessons: number;
   topic: string;
   strictMode: boolean;
+  audioEnabled: boolean;
+  calmMode: boolean;
   onComplete: () => void;
   onCancel: () => void;
 }
 
-export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons, topic, strictMode, onComplete, onCancel }: TypingTestProps) {
+export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons, topic, strictMode, audioEnabled, calmMode, onComplete, onCancel }: TypingTestProps) {
   const { user } = useAuth();
   const isMobile = useIsMobile();
   const [text, setText] = useState('');
@@ -57,6 +77,18 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
   const [errorPops, setErrorPops] = useState<{ id: number; char: string; x: number; y: number }[]>([]);
   const [paused, setPaused] = useState(false);
   const [pausedTime, setPausedTime] = useState(0);
+  const [combo, setCombo] = useState(0);
+  const [comboFlash, setComboFlash] = useState(false);
+  const [bestCombo, setBestCombo] = useState(0);
+  const [focusNudge, setFocusNudge] = useState<string | null>(null);
+  const [results, setResults] = useState<{ wpm: number; accuracy: number; rawAccuracy: number; duration: number; bestCombo: number } | null>(null);
+  const [focusRating, setFocusRating] = useState<number | null>(null);
+  // Session chunking: break lesson into multiple short blocks
+  const TOTAL_CHUNKS = 3;
+  const [currentChunk, setCurrentChunk] = useState(1);
+  const [chunkTransition, setChunkTransition] = useState(false);
+  // Accumulate stats across chunks
+  const chunkStats = useRef({ totalCorrect: 0, totalChars: 0, totalErrors: 0, totalDuration: 0 });
 
   const inputRef = useRef<HTMLInputElement>(null);
   const hasGenerated = useRef(false);
@@ -64,6 +96,12 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
   const charRefs = useRef<(HTMLSpanElement | null)[]>([]);
   const errorPopId = useRef(0);
   const pauseStartRef = useRef(0);
+  // Variable-ratio thresholds for combo rewards (unpredictable intervals)
+  const nextComboThreshold = useRef(generateComboThreshold());
+  // Focus decay: track recent inter-keystroke intervals
+  const lastKeystrokeTime = useRef(0);
+  const recentIntervals = useRef<number[]>([]);
+  const lastNudgeTime = useRef(0);
 
   const generateLesson = useCallback(async () => {
     setLoading(true);
@@ -78,6 +116,8 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
           avgAccuracy,
           totalLessons,
           topic,
+          chunkIndex: 0,
+          totalChunks: TOTAL_CHUNKS,
         }),
       });
 
@@ -93,6 +133,14 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
       setTotalErrors(0);
       setPaused(false);
       setPausedTime(0);
+      setCombo(0);
+      setBestCombo(0);
+      setComboFlash(false);
+      setFocusNudge(null);
+      nextComboThreshold.current = generateComboThreshold();
+      lastKeystrokeTime.current = 0;
+      recentIntervals.current = [];
+      lastNudgeTime.current = 0;
 
       setTimeout(() => inputRef.current?.focus(), 100);
     } catch (error) {
@@ -119,6 +167,17 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
     setTotalErrors(0);
     setPaused(false);
     setPausedTime(0);
+    setCombo(0);
+    setBestCombo(0);
+    setComboFlash(false);
+    setFocusNudge(null);
+    setCurrentChunk(1);
+    setChunkTransition(false);
+    chunkStats.current = { totalCorrect: 0, totalChars: 0, totalErrors: 0, totalDuration: 0 };
+    nextComboThreshold.current = generateComboThreshold();
+    lastKeystrokeTime.current = 0;
+    recentIntervals.current = [];
+    lastNudgeTime.current = 0;
     setTimeout(() => inputRef.current?.focus(), 50);
   };
 
@@ -135,10 +194,36 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
+    const now = Date.now();
 
     if (!startTime && val.length > 0) {
-      setStartTime(Date.now());
+      setStartTime(now);
     }
+
+    // Focus decay detection: track inter-keystroke timing
+    if (val.length > input.length && lastKeystrokeTime.current > 0) {
+      const interval = now - lastKeystrokeTime.current;
+      // Ignore very long pauses (>5s) — likely deliberate pause, not drift
+      if (interval < 5000) {
+        recentIntervals.current.push(interval);
+        if (recentIntervals.current.length > FOCUS_WINDOW) {
+          recentIntervals.current.shift();
+        }
+        // Check variance when we have enough data
+        if (recentIntervals.current.length >= FOCUS_WINDOW && now - lastNudgeTime.current > FOCUS_COOLDOWN_MS) {
+          const intervals = recentIntervals.current;
+          const mean = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+          const variance = intervals.reduce((sum, v) => sum + (v - mean) ** 2, 0) / intervals.length;
+          const cv = Math.sqrt(variance) / mean;
+          if (cv > FOCUS_CV_THRESHOLD) {
+            lastNudgeTime.current = now;
+            setFocusNudge(FOCUS_NUDGES[Math.floor(Math.random() * FOCUS_NUDGES.length)]);
+            setTimeout(() => setFocusNudge(null), 4000);
+          }
+        }
+      }
+    }
+    lastKeystrokeTime.current = now;
 
     // Check for mistakes on the newly typed character
     if (val.length > input.length) {
@@ -146,7 +231,25 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
       const expectedChar = text[newCharIndex];
       const typedChar = val[newCharIndex];
 
+      if (expectedChar && typedChar === expectedChar) {
+        // Correct keystroke — build combo
+        if (audioEnabled) playCorrectSound();
+        setCombo(prev => {
+          const next = prev + 1;
+          if (next >= nextComboThreshold.current) {
+            setComboFlash(true);
+            if (audioEnabled) playStreakSound();
+            setTimeout(() => setComboFlash(false), 800);
+            nextComboThreshold.current = generateComboThreshold();
+          }
+          setBestCombo(best => Math.max(best, next));
+          return next;
+        });
+      }
+
       if (expectedChar && typedChar !== expectedChar) {
+        setCombo(0);
+        if (audioEnabled) playErrorSound();
         setTotalErrors(prev => prev + 1);
         setMistakes(prev => ({
           ...prev,
@@ -159,10 +262,10 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
           [bigramKey]: (prev[bigramKey] || 0) + 1
         }));
 
-        // Spawn floating error pop
+        // Spawn floating error pop (suppressed in calm mode)
         const charEl = charRefs.current[newCharIndex];
         const containerEl = textContainerRef.current;
-        if (charEl && containerEl) {
+        if (!calmMode && charEl && containerEl) {
           const charRect = charEl.getBoundingClientRect();
           const containerRect = containerEl.getBoundingClientRect();
           const id = ++errorPopId.current;
@@ -190,32 +293,81 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
     }
   };
 
+  const advanceChunk = () => {
+    // Show transition briefly, then generate next chunk
+    setChunkTransition(true);
+    setTimeout(async () => {
+      setChunkTransition(false);
+      setCurrentChunk(prev => prev + 1);
+      // Reset per-chunk state but keep accumulated mistakes/bigrams
+      setInput('');
+      setStartTime(null);
+      setEndTime(null);
+      setTotalErrors(0);
+      setPaused(false);
+      setPausedTime(0);
+      setCombo(0);
+      setComboFlash(false);
+      setFocusNudge(null);
+      lastKeystrokeTime.current = 0;
+      recentIntervals.current = [];
+      // Generate new text for the next chunk (currentChunk closure value = previous chunk's 1-based index, works as 0-based index for the next chunk)
+      try {
+        const response = await fetch('/api/generate-lesson', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons, topic, chunkIndex: currentChunk, totalChunks: TOTAL_CHUNKS }),
+        });
+        if (!response.ok) throw new Error('API request failed');
+        const data = await response.json();
+        setText(data.text);
+      } catch {
+        setText(FALLBACK_TEXTS[Math.floor(Math.random() * FALLBACK_TEXTS.length)]);
+      }
+      setTimeout(() => inputRef.current?.focus(), 100);
+    }, 1500);
+  };
+
   const finishTest = async (finalInput: string) => {
     if (!user || !startTime) return;
-    setSaving(true);
 
     const durationSeconds = (Date.now() - startTime - pausedTime) / 1000;
     const correctChars = countCorrectChars(text, finalInput);
-    const wpm = calculateWpm(correctChars, durationSeconds);
-    const rawAccuracy = calculateAccuracy(text.length, totalErrors);
     const uncorrectedErrors = countUncorrectedErrors(text, finalInput);
-    const accuracy = calculateAccuracy(text.length, uncorrectedErrors);
+
+    // Accumulate stats across chunks
+    chunkStats.current.totalCorrect += correctChars;
+    chunkStats.current.totalChars += text.length;
+    chunkStats.current.totalErrors += totalErrors;
+    chunkStats.current.totalDuration += durationSeconds;
+
+    // If more chunks remain, advance to next
+    if (currentChunk < TOTAL_CHUNKS) {
+      advanceChunk();
+      return;
+    }
+
+    // Final chunk — compute aggregate stats and save
+    setSaving(true);
+    const stats = chunkStats.current;
+    const wpm = calculateWpm(stats.totalCorrect, stats.totalDuration);
+    const rawAccuracy = calculateAccuracy(stats.totalChars, stats.totalErrors);
+    const finalUncorrected = stats.totalChars - stats.totalCorrect;
+    const accuracy = calculateAccuracy(stats.totalChars, finalUncorrected);
 
     try {
-      // Save the lesson
       await addDoc(collection(db, `users/${user.uid}/lessons`), {
         uid: user.uid,
         createdAt: serverTimestamp(),
-        text: text,
+        text: `[${TOTAL_CHUNKS}-chunk session]`,
         wpm,
         accuracy,
         rawAccuracy,
-        duration: Math.round(durationSeconds),
+        duration: Math.round(stats.totalDuration),
         mistakes,
         bigrams: sessionBigrams,
       });
 
-      // Update user stats atomically to prevent race conditions
       const userRef = doc(db, 'users', user.uid);
       await runTransaction(db, async (transaction) => {
         const userSnap = await transaction.get(userRef);
@@ -244,17 +396,37 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
         });
       });
 
-      onComplete();
+      setResults({ wpm, accuracy, rawAccuracy, duration: Math.round(stats.totalDuration), bestCombo });
+      setSaving(false);
     } catch (error) {
       console.error("Failed to save lesson:", error);
       setSaving(false);
     }
   };
 
+  // Find the end of the current sentence (for progressive reveal)
+  const getRevealBoundary = useCallback((pos: number): number => {
+    // Reveal up to the end of the current sentence from cursor position
+    const sentenceEnds = /[.!?]/g;
+    let match;
+    let boundary = text.length;
+    sentenceEnds.lastIndex = pos;
+    // Find the next sentence-ending punctuation after cursor
+    while ((match = sentenceEnds.exec(text)) !== null) {
+      // Include trailing space after punctuation
+      boundary = Math.min(text.length, match.index + 2);
+      break;
+    }
+    return boundary;
+  }, [text]);
+
   const renderText = () => {
     charRefs.current = [];
+    const revealEnd = getRevealBoundary(input.length);
+
     return text.split('').map((char, index) => {
       let color = 'text-zinc-500';
+      const isBeyondReveal = index >= revealEnd;
 
       if (index < input.length) {
         if (input[index] === char) {
@@ -264,6 +436,8 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
         }
       } else if (index === input.length) {
         color = 'text-zinc-500 bg-zinc-800 animate-pulse';
+      } else if (isBeyondReveal) {
+        color = 'text-zinc-800';
       }
 
       return (
@@ -277,6 +451,78 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
       );
     });
   };
+
+  if (chunkTransition) {
+    const labels = ['Nice work!', 'Keep it up!', 'Almost there!'];
+    return (
+      <div className="flex flex-col items-center justify-center py-32 space-y-6 animate-in fade-in duration-300">
+        <div className="text-4xl font-bold text-emerald-400">{labels[currentChunk - 1] || 'Nice work!'}</div>
+        <p className="text-zinc-400">Next exercise loading...</p>
+        <div className="flex gap-2 mt-4">
+          {Array.from({ length: TOTAL_CHUNKS }, (_, i) => (
+            <div key={i} className={`w-3 h-3 rounded-full ${i < currentChunk ? 'bg-emerald-500' : 'bg-zinc-700'}`} />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (results) {
+    const focusLabels = ['Scattered', 'Okay', 'Locked In'];
+    return (
+      <div className="max-w-2xl mx-auto py-16 animate-in fade-in zoom-in-95 duration-300">
+        <h2 className="text-3xl font-bold tracking-tight text-center mb-10">Lesson Complete</h2>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-10">
+          <div className="p-5 rounded-2xl bg-zinc-900 border border-zinc-800 text-center">
+            <div className="text-sm text-zinc-400 mb-1">WPM</div>
+            <div className="text-3xl font-bold">{results.wpm}</div>
+          </div>
+          <div className="p-5 rounded-2xl bg-zinc-900 border border-zinc-800 text-center">
+            <div className="text-sm text-zinc-400 mb-1">Accuracy</div>
+            <div className="text-3xl font-bold">{results.accuracy}%</div>
+          </div>
+          <div className="p-5 rounded-2xl bg-zinc-900 border border-zinc-800 text-center">
+            <div className="text-sm text-zinc-400 mb-1">Raw Accuracy</div>
+            <div className="text-3xl font-bold text-zinc-500">{results.rawAccuracy}%</div>
+          </div>
+          <div className="p-5 rounded-2xl bg-zinc-900 border border-zinc-800 text-center">
+            <div className="text-sm text-zinc-400 mb-1">Best Streak</div>
+            <div className="text-3xl font-bold text-yellow-400">{results.bestCombo}</div>
+          </div>
+        </div>
+
+        <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 mb-8">
+          <h3 className="text-lg font-semibold text-center mb-4">How focused did you feel?</h3>
+          <div className="flex justify-center gap-4">
+            {[1, 2, 3].map(rating => (
+              <button
+                key={rating}
+                onClick={() => setFocusRating(rating)}
+                className={`flex flex-col items-center gap-2 px-6 py-4 rounded-xl transition-all ${
+                  focusRating === rating
+                    ? 'bg-emerald-600 text-white scale-105'
+                    : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
+                }`}
+              >
+                <span className="text-2xl">{['🌊', '👍', '🎯'][rating - 1]}</span>
+                <span className="text-sm font-medium">{focusLabels[rating - 1]}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex justify-center">
+          <Button
+            onClick={onComplete}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white px-8"
+          >
+            Back to Dashboard
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   if (isMobile) {
     return (
@@ -303,9 +549,16 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
   }
 
   return (
-    <div className="max-w-4xl mx-auto py-12 animate-in fade-in zoom-in-95 duration-300">
+    <div className={`max-w-4xl mx-auto py-12 ${calmMode ? '' : 'animate-in fade-in zoom-in-95 duration-300'}`}>
       <div className="flex items-center justify-between mb-8">
-        <h2 className="text-2xl font-bold tracking-tight">AI Typing Lesson</h2>
+        <div className="flex items-center gap-3">
+          <h2 className="text-2xl font-bold tracking-tight">AI Typing Lesson</h2>
+          <div className="flex gap-1.5">
+            {Array.from({ length: TOTAL_CHUNKS }, (_, i) => (
+              <div key={i} className={`w-2 h-2 rounded-full ${i < currentChunk ? 'bg-emerald-500' : i === currentChunk - 1 ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-700'}`} />
+            ))}
+          </div>
+        </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={restartLesson} disabled={saving || paused} className="text-zinc-400">
             <RotateCcw className="h-4 w-4 mr-2" />
@@ -332,7 +585,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
         ref={textContainerRef}
         role="region"
         aria-label="Typing test area. Click to focus and start typing."
-        className={`relative p-8 rounded-2xl bg-zinc-900 border border-zinc-800 text-2xl md:text-3xl leading-relaxed font-mono tracking-tight shadow-xl cursor-text ${paused ? 'select-none' : ''}`}
+        className={`relative p-8 rounded-2xl border font-mono tracking-tight cursor-text ${paused ? 'select-none' : ''} ${calmMode ? 'bg-zinc-950 border-zinc-900 text-xl md:text-2xl leading-loose shadow-none' : 'bg-zinc-900 border-zinc-800 text-2xl md:text-3xl leading-relaxed shadow-xl'}`}
         onClick={() => inputRef.current?.focus()}
       >
         <span className={paused ? 'blur-md transition-all duration-200' : 'transition-all duration-200'}>{renderText()}</span>
@@ -359,6 +612,12 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
           autoFocus
         />
 
+        {focusNudge && (
+          <div className="absolute top-2 left-1/2 -translate-x-1/2 px-4 py-2 rounded-full bg-emerald-900/80 text-emerald-300 text-sm font-medium backdrop-blur-sm animate-in fade-in zoom-in-95 duration-300">
+            {focusNudge}
+          </div>
+        )}
+
         {saving && (
           <div className="absolute inset-0 bg-zinc-950/80 backdrop-blur-sm rounded-2xl flex flex-col items-center justify-center">
             <Loader2 className="h-8 w-8 animate-spin text-emerald-500 mb-4" />
@@ -381,6 +640,15 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
             <div className="text-sm uppercase tracking-wider font-semibold mb-1">Progress</div>
             <div className="text-xl font-mono text-zinc-50" aria-label={`Progress: ${Math.round((input.length / text.length) * 100) || 0} percent`}>{Math.round((input.length / text.length) * 100) || 0}%</div>
           </div>
+          {!calmMode && (
+            <div>
+              <div className="text-sm uppercase tracking-wider font-semibold mb-1">Combo</div>
+              <div className={`text-xl font-mono transition-all duration-200 ${comboFlash ? 'text-yellow-400 scale-125' : combo > 0 ? 'text-emerald-400' : 'text-zinc-500'}`}>
+                {combo > 0 ? combo : '-'}
+                {bestCombo > 10 && <span className="text-xs text-zinc-500 ml-1">best {bestCombo}</span>}
+              </div>
+            </div>
+          )}
           <div>
             <div className="text-sm uppercase tracking-wider font-semibold mb-1">Errors</div>
             <div className="text-xl font-mono text-red-400" aria-label={`Total errors: ${totalErrors}`}>{totalErrors}</div>
@@ -393,9 +661,16 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
           </div>
         </div>
 
-        <div className="text-sm">
-          Focus on accuracy over speed.
-        </div>
+        {comboFlash && !calmMode && (
+          <div className="text-yellow-400 font-bold text-sm animate-bounce">
+            Streak!
+          </div>
+        )}
+        {(!comboFlash || calmMode) && (
+          <div className="text-sm">
+            Focus on accuracy over speed.
+          </div>
+        )}
       </div>
     </div>
   );

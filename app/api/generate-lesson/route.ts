@@ -26,10 +26,21 @@ interface GenerateRequest {
   avgAccuracy: number;
   totalLessons: number;
   topic: string;
+  chunkIndex?: number;  // 0-based index within a multi-chunk session
+  totalChunks?: number; // total chunks in the session
 }
+
+// Vary the angle/framing per chunk so the AI doesn't produce near-identical text
+const CHUNK_VARIETY = [
+  'Use a narrative or storytelling angle.',
+  'Use a factual or informational angle.',
+  'Use a descriptive or observational angle.',
+];
 
 function buildPrompt(data: GenerateRequest): string {
   const { weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons } = data;
+  const chunkIndex = data.chunkIndex ?? 0;
+  const totalChunks = data.totalChunks ?? 1;
   // Strip "custom:" prefix if present
   const topic = data.topic.startsWith('custom:') ? data.topic.slice(7).trim() || 'general' : data.topic;
 
@@ -68,18 +79,23 @@ function buildPrompt(data: GenerateRequest): string {
   let prompt: string;
 
   if (useDrill) {
-    prompt = `Generate a focused typing drill (around ${wordCount} words) that repeats short words and letter patterns to build muscle memory for these keys: ${sortedKeys.join(', ')}. Mix real short words using those letters with simple repetitive patterns. Keep it as natural-reading text, not random gibberish — for example "jeff fed the fluffy fox five figs" for the letter f.`;
+    prompt = `Generate a focused typing drill (around ${wordCount} words) that builds muscle memory for these keys: ${sortedKeys.join(', ')}. Use a variety of real, common short words that feature those letters. Do NOT repeat any word more than twice. Vary sentence structure — for example "jeff fed the fluffy fox five figs and found fresh fruit" for the letter f.`;
   } else if (useCodeSnippet) {
     prompt = `Generate a realistic-looking code snippet (around ${wordCount} words worth of text) for a typing test. Use common programming patterns: variable declarations, function calls, if/else blocks, loops, string literals, comments. Use symbols programmers type often: = {} () [] ; : . , < > / " ' \` _ - + && ||. Output plain text that looks like code but can be typed as a single continuous block with no actual line breaks.`;
     if (sortedKeys.length > 0) {
       prompt += ` Include variable/function names that use these letters the user struggles with: ${sortedKeys.join(', ')}.`;
     }
   } else {
-    prompt = `Generate a single paragraph of plain prose (around ${wordCount} words) for a typing test. ${difficulty}`;
+    const variety = CHUNK_VARIETY[chunkIndex % CHUNK_VARIETY.length];
+    prompt = `Generate a single paragraph of plain prose (around ${wordCount} words) for a typing test. ${difficulty} ${variety}`;
 
     // Topic guidance
     if (topic && topic !== 'general') {
       prompt += ` Write about the topic: ${topic}.`;
+    }
+
+    if (totalChunks > 1) {
+      prompt += ` This is exercise ${chunkIndex + 1} of ${totalChunks} in a session — make the content distinct from other exercises on this topic.`;
     }
   }
 
@@ -97,7 +113,7 @@ function buildPrompt(data: GenerateRequest): string {
     prompt += ` The user often ${bigramDescriptions.join(', and ')}. Include words that help practice the correct keys.`;
   }
 
-  prompt += ' Output ONLY the text. No quotes, no markdown, no labels, no bullet points.';
+  prompt += ' Do not repeat any word more than 3 times in the entire text. Output ONLY the text. No quotes, no markdown, no labels, no bullet points.';
 
   return prompt;
 }
@@ -116,6 +132,7 @@ export async function POST(request: NextRequest) {
     const response = await ai.models.generateContent({
       model: 'gemini-3.1-flash-lite-preview',
       contents: prompt,
+      config: { temperature: 1.2 },
     });
 
     const text = response.text?.trim().replace(/\n/g, ' ').replace(/\s+/g, ' ') || null;
