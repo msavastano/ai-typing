@@ -58,11 +58,12 @@ interface TypingTestProps {
   strictMode: boolean;
   audioEnabled: boolean;
   calmMode: boolean;
+  totalChunks: number;
   onComplete: () => void;
   onCancel: () => void;
 }
 
-export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons, topic, strictMode, audioEnabled, calmMode, onComplete, onCancel }: TypingTestProps) {
+export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons, topic, strictMode, audioEnabled, calmMode, totalChunks, onComplete, onCancel }: TypingTestProps) {
   const { user } = useAuth();
   const isMobile = useIsMobile();
   const [text, setText] = useState('');
@@ -84,7 +85,6 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
   const [results, setResults] = useState<{ wpm: number; accuracy: number; rawAccuracy: number; duration: number; bestCombo: number } | null>(null);
   const [focusRating, setFocusRating] = useState<number | null>(null);
   // Session chunking: break lesson into multiple short blocks
-  const TOTAL_CHUNKS = 3;
   const [currentChunk, setCurrentChunk] = useState(1);
   const [chunkTransition, setChunkTransition] = useState(false);
   // Accumulate stats across chunks
@@ -103,6 +103,14 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
   const recentIntervals = useRef<number[]>([]);
   const lastNudgeTime = useRef(0);
 
+  // Keyboard shortcuts — use a ref so the listener registers once but always sees current state
+  const shortcutRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => shortcutRef.current(e);
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
   const generateLesson = useCallback(async () => {
     setLoading(true);
     try {
@@ -117,7 +125,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
           totalLessons,
           topic,
           chunkIndex: 0,
-          totalChunks: TOTAL_CHUNKS,
+          totalChunks: totalChunks,
         }),
       });
 
@@ -294,10 +302,9 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
   };
 
   const advanceChunk = () => {
-    // Show transition briefly, then generate next chunk
+    // Show transition screen, then generate next chunk — keep it visible until text is ready
     setChunkTransition(true);
     setTimeout(async () => {
-      setChunkTransition(false);
       setCurrentChunk(prev => prev + 1);
       // Reset per-chunk state but keep accumulated mistakes/bigrams
       setInput('');
@@ -316,7 +323,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
         const response = await fetch('/api/generate-lesson', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons, topic, chunkIndex: currentChunk, totalChunks: TOTAL_CHUNKS }),
+          body: JSON.stringify({ weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons, topic, chunkIndex: currentChunk, totalChunks: totalChunks }),
         });
         if (!response.ok) throw new Error('API request failed');
         const data = await response.json();
@@ -324,6 +331,8 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
       } catch {
         setText(FALLBACK_TEXTS[Math.floor(Math.random() * FALLBACK_TEXTS.length)]);
       }
+      // Hide transition screen only after new text is ready to prevent old text flash
+      setChunkTransition(false);
       setTimeout(() => inputRef.current?.focus(), 100);
     }, 1500);
   };
@@ -342,7 +351,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
     chunkStats.current.totalDuration += durationSeconds;
 
     // If more chunks remain, advance to next
-    if (currentChunk < TOTAL_CHUNKS) {
+    if (currentChunk < totalChunks) {
       advanceChunk();
       return;
     }
@@ -359,7 +368,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
       await addDoc(collection(db, `users/${user.uid}/lessons`), {
         uid: user.uid,
         createdAt: serverTimestamp(),
-        text: `[${TOTAL_CHUNKS}-chunk session]`,
+        text: `[${totalChunks}-chunk session]`,
         wpm,
         accuracy,
         rawAccuracy,
@@ -452,6 +461,46 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
     });
   };
 
+  // Assign current shortcut handler (always sees latest state/closures)
+  shortcutRef.current = (e: KeyboardEvent) => {
+    // Inactive during loading, saving, transitions, or results
+    if (loading || saving || chunkTransition || results) return;
+
+    // Escape — toggle pause (only once typing has started)
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      if (startTime && !endTime) {
+        togglePause();
+      }
+      return;
+    }
+
+    // Tab — re-focus the typing input
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      inputRef.current?.focus();
+      return;
+    }
+
+    // While paused, single-key shortcuts (input is disabled so these won't type)
+    if (paused) {
+      switch (e.key.toLowerCase()) {
+        case 'r':
+          e.preventDefault();
+          restartLesson();
+          break;
+        case 's':
+          e.preventDefault();
+          generateLesson();
+          break;
+        case 'q':
+          e.preventDefault();
+          onCancel();
+          break;
+      }
+    }
+  };
+
   if (chunkTransition) {
     const labels = ['Nice work!', 'Keep it up!', 'Almost there!'];
     return (
@@ -459,7 +508,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
         <div className="text-4xl font-bold text-emerald-400">{labels[currentChunk - 1] || 'Nice work!'}</div>
         <p className="text-zinc-400">Next exercise loading...</p>
         <div className="flex gap-2 mt-4">
-          {Array.from({ length: TOTAL_CHUNKS }, (_, i) => (
+          {Array.from({ length: totalChunks }, (_, i) => (
             <div key={i} className={`w-3 h-3 rounded-full ${i < currentChunk ? 'bg-emerald-500' : 'bg-zinc-700'}`} />
           ))}
         </div>
@@ -554,7 +603,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
         <div className="flex items-center gap-3">
           <h2 className="text-2xl font-bold tracking-tight">AI Typing Lesson</h2>
           <div className="flex gap-1.5">
-            {Array.from({ length: TOTAL_CHUNKS }, (_, i) => (
+            {Array.from({ length: totalChunks }, (_, i) => (
               <div key={i} className={`w-2 h-2 rounded-full ${i < currentChunk ? 'bg-emerald-500' : i === currentChunk - 1 ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-700'}`} />
             ))}
           </div>
@@ -569,7 +618,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
             Skip
           </Button>
           {startTime && !endTime && (
-            <Button variant="outline" size="sm" onClick={togglePause} disabled={saving} className="text-zinc-400">
+            <Button variant="outline" size="sm" onClick={togglePause} disabled={saving} className="text-zinc-400" title="Esc">
               {paused ? <Play className="h-4 w-4 mr-2" /> : <Pause className="h-4 w-4 mr-2" />}
               {paused ? 'Resume' : 'Pause'}
             </Button>
@@ -629,7 +678,12 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
           <div className="absolute inset-0 bg-zinc-950/80 backdrop-blur-sm rounded-2xl flex flex-col items-center justify-center cursor-pointer" onClick={togglePause}>
             <Play className="h-12 w-12 text-emerald-500 mb-4" />
             <p className="font-medium text-zinc-300">Paused</p>
-            <p className="text-sm text-zinc-500 mt-2">Click anywhere to resume</p>
+            <p className="text-sm text-zinc-500 mt-2">Click or press <kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono text-xs">Esc</kbd> to resume</p>
+            <div className="flex gap-4 mt-4 text-xs text-zinc-600">
+              <span><kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono">R</kbd> restart</span>
+              <span><kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono">S</kbd> skip</span>
+              <span><kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono">Q</kbd> cancel</span>
+            </div>
           </div>
         )}
       </div>
@@ -671,6 +725,11 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
             Focus on accuracy over speed.
           </div>
         )}
+      </div>
+
+      <div className="mt-3 flex justify-center gap-4 text-xs text-zinc-600">
+        <span><kbd className="px-1 py-0.5 rounded bg-zinc-800 text-zinc-500 font-mono">Tab</kbd> focus</span>
+        <span><kbd className="px-1 py-0.5 rounded bg-zinc-800 text-zinc-500 font-mono">Esc</kbd> pause, then <kbd className="px-1 py-0.5 rounded bg-zinc-800 text-zinc-500 font-mono">R</kbd> <kbd className="px-1 py-0.5 rounded bg-zinc-800 text-zinc-500 font-mono">S</kbd> <kbd className="px-1 py-0.5 rounded bg-zinc-800 text-zinc-500 font-mono">Q</kbd></span>
       </div>
     </div>
   );

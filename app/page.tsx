@@ -66,6 +66,7 @@ export default function Home() {
   const [strictMode, setStrictMode] = useState(false);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [calmMode, setCalmMode] = useState(false);
+  const [sessionBlocks, setSessionBlocks] = useState(2);
 
   useEffect(() => {
     if (!user) return;
@@ -193,6 +194,7 @@ export default function Home() {
             strictMode={strictMode}
             audioEnabled={audioEnabled}
             calmMode={calmMode}
+            totalChunks={sessionBlocks}
             onComplete={() => setIsTyping(false)}
             onCancel={() => setIsTyping(false)}
           />
@@ -282,6 +284,27 @@ export default function Home() {
                   autoFocus
                 />
               )}
+            </div>
+
+            {/* Session length selector */}
+            <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800">
+              <h3 className="text-lg font-semibold mb-1">Session Length</h3>
+              <p className="text-sm text-zinc-400 mb-3">Number of typing blocks per session</p>
+              <div className="flex gap-2">
+                {[1, 2, 3].map(n => (
+                  <button
+                    key={n}
+                    onClick={() => setSessionBlocks(n)}
+                    className={`px-5 py-2 rounded-lg text-sm font-medium transition-colors ${
+                      sessionBlocks === n
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'
+                    }`}
+                  >
+                    {n} {n === 1 ? 'block' : 'blocks'}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* Strict mode toggle */}
