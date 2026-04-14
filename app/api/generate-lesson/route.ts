@@ -28,6 +28,7 @@ interface GenerateRequest {
   topic: string;
   chunkIndex?: number;  // 0-based index within a multi-chunk session
   totalChunks?: number; // total chunks in the session
+  focusKeys?: string[]; // user-chosen keys to focus on (overrides AI-detected weak keys)
 }
 
 // Vary the angle/framing per chunk so the AI doesn't produce near-identical text
@@ -58,11 +59,13 @@ function buildPrompt(data: GenerateRequest): string {
     wordCount = '50-70';
   }
 
-  // Apply decay to weak keys — only use recent-weighted top keys
-  const sortedKeys = Object.entries(weakKeys)
-    .sort(([, a], [, b]) => b - a)
-    .slice(0, 5)
-    .map(([k]) => k);
+  // Use user-chosen focus keys if provided, otherwise fall back to AI-detected weak keys
+  const sortedKeys = data.focusKeys && data.focusKeys.length > 0
+    ? data.focusKeys.slice(0, 8)
+    : Object.entries(weakKeys)
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 5)
+        .map(([k]) => k);
 
   // Top bigram confusions (e.g., "expected r but typed t")
   const sortedBigrams = Object.entries(bigrams)

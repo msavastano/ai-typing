@@ -2,7 +2,7 @@
 
 import { useAuth } from '@/lib/auth-context';
 import { Button } from '@/components/ui/button';
-import { Keyboard, LogOut, Loader2, Play, Activity, Target, Trophy, ShieldCheck, Volume2, Moon } from 'lucide-react';
+import { Keyboard, LogOut, Loader2, Play, Activity, Target, Trophy, ShieldCheck, Volume2, Moon, Crosshair } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { doc, onSnapshot, updateDoc, collection, query, orderBy, limit } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
@@ -67,6 +67,7 @@ export default function Home() {
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [calmMode, setCalmMode] = useState(false);
   const [sessionBlocks, setSessionBlocks] = useState(2);
+  const [focusKeys, setFocusKeys] = useState<string[]>([]);
 
   useEffect(() => {
     if (!user) return;
@@ -195,6 +196,7 @@ export default function Home() {
             audioEnabled={audioEnabled}
             calmMode={calmMode}
             totalChunks={sessionBlocks}
+            focusKeys={focusKeys}
             onComplete={() => setIsTyping(false)}
             onCancel={() => setIsTyping(false)}
           />
@@ -303,6 +305,61 @@ export default function Home() {
                   >
                     {n} {n === 1 ? 'block' : 'blocks'}
                   </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Focus Keys picker */}
+            <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800">
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-2">
+                  <Crosshair className={`h-5 w-5 ${focusKeys.length > 0 ? 'text-emerald-500' : 'text-zinc-500'}`} />
+                  <h3 className="text-lg font-semibold">Focus Keys</h3>
+                </div>
+                {focusKeys.length > 0 && (
+                  <button
+                    onClick={() => setFocusKeys([])}
+                    className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+                  >
+                    Clear all
+                  </button>
+                )}
+              </div>
+              <p className="text-sm text-zinc-400 mb-4">
+                {focusKeys.length > 0
+                  ? `Lesson text will emphasize: ${focusKeys.join(', ').toUpperCase()}`
+                  : 'Pick specific keys to practice — or leave empty to let the AI choose based on your mistakes'}
+              </p>
+              <div className="space-y-2">
+                {[
+                  ['q','w','e','r','t','y','u','i','o','p'],
+                  ['a','s','d','f','g','h','j','k','l'],
+                  ['z','x','c','v','b','n','m'],
+                ].map((row, rowIndex) => (
+                  <div key={rowIndex} className="flex justify-center gap-1.5" style={{ paddingLeft: rowIndex === 1 ? '16px' : rowIndex === 2 ? '40px' : '0' }}>
+                    {row.map(key => {
+                      const isSelected = focusKeys.includes(key);
+                      return (
+                        <button
+                          key={key}
+                          onClick={() => {
+                            setFocusKeys(prev =>
+                              prev.includes(key)
+                                ? prev.filter(k => k !== key)
+                                : [...prev, key]
+                            );
+                          }}
+                          className={`w-10 h-10 rounded-lg text-sm font-mono font-semibold uppercase transition-all ${
+                            isSelected
+                              ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20 scale-105'
+                              : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'
+                          }`}
+                        >
+                          {key}
+                        </button>
+                      );
+                    })}
+                  </div>
                 ))}
               </div>
             </div>

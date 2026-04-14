@@ -59,11 +59,12 @@ interface TypingTestProps {
   audioEnabled: boolean;
   calmMode: boolean;
   totalChunks: number;
+  focusKeys: string[];
   onComplete: () => void;
   onCancel: () => void;
 }
 
-export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons, topic, strictMode, audioEnabled, calmMode, totalChunks, onComplete, onCancel }: TypingTestProps) {
+export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons, topic, strictMode, audioEnabled, calmMode, totalChunks, focusKeys, onComplete, onCancel }: TypingTestProps) {
   const { user } = useAuth();
   const isMobile = useIsMobile();
   const [text, setText] = useState('');
@@ -126,6 +127,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
           topic,
           chunkIndex: 0,
           totalChunks: totalChunks,
+          focusKeys,
         }),
       });
 
@@ -323,7 +325,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
         const response = await fetch('/api/generate-lesson', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons, topic, chunkIndex: currentChunk, totalChunks: totalChunks }),
+          body: JSON.stringify({ weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons, topic, chunkIndex: currentChunk, totalChunks: totalChunks, focusKeys }),
         });
         if (!response.ok) throw new Error('API request failed');
         const data = await response.json();
