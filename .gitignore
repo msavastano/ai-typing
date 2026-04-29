@@ -10,3 +10,5 @@ tsconfig.tsbuildinfo
 .firebase/
 .claude/settings.local.json
 .vercel
+.aidesigner/*
+!.aidesigner/.gitkeep

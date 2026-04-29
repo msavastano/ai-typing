@@ -11,7 +11,8 @@
       "ReadFile",
       "Bash(npm install:*)",
       "Bash(npx vitest:*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "mcp__aidesigner__get_credit_status"
     ]
   },
   "enableAllProjectMcpServers": true,
