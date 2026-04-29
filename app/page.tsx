@@ -1,46 +1,36 @@
 'use client';
 
 import { useAuth } from '@/lib/auth-context';
-import { Button } from '@/components/ui/button';
-import { Keyboard, LogOut, Loader2, Play, Activity, Target, Trophy, ShieldCheck, Volume2, Moon, Crosshair } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { doc, onSnapshot, updateDoc, collection, query, orderBy, limit } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import TypingTest from '@/components/typing-test';
 import KeyboardHeatmap from '@/components/keyboard-heatmap';
 
-function Sparkline({ data, width = 200, height = 48 }: { data: number[]; width?: number; height?: number }) {
+function Sparkline({ data, width = 340, height = 60 }: { data: number[]; width?: number; height?: number }) {
   if (data.length < 2) return null;
   const min = Math.min(...data);
   const max = Math.max(...data);
   const range = max - min || 1;
-  const padding = 2;
+  const padding = 4;
   const points = data.map((v, i) => {
     const x = (i / (data.length - 1)) * (width - padding * 2) + padding;
     const y = height - padding - ((v - min) / range) * (height - padding * 2);
     return `${x},${y}`;
   });
-  const last = data[data.length - 1];
-  const prev = data[data.length - 2];
-  const color = last >= prev ? '#10b981' : '#ef4444';
+  const lastPoint = points[points.length - 1].split(',');
 
   return (
     <svg width={width} height={height} className="overflow-visible">
       <polyline
         points={points.join(' ')}
         fill="none"
-        stroke={color}
+        stroke="#665f51"
         strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      {/* Dot on latest point */}
-      <circle
-        cx={parseFloat(points[points.length - 1].split(',')[0])}
-        cy={parseFloat(points[points.length - 1].split(',')[1])}
-        r="3"
-        fill={color}
-      />
+      <circle cx={parseFloat(lastPoint[0])} cy={parseFloat(lastPoint[1])} r="3.5" fill="#665f51" />
     </svg>
   );
 }
@@ -56,6 +46,48 @@ const PRESET_TOPICS = [
 ];
 
 const PRESET_VALUES = new Set(PRESET_TOPICS.map(t => t.value));
+
+const ROWS = [
+  ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'],
+  ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'],
+  ['z', 'x', 'c', 'v', 'b', 'n', 'm'],
+];
+const ROW_OFFSETS = [0, 18, 46];
+
+function Toggle({ on, onChange }: { on: boolean; onChange: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onChange}
+      className="relative inline-flex shrink-0 cursor-pointer rounded-full border-none p-0 transition-colors duration-200"
+      style={{
+        width: 44,
+        height: 26,
+        background: on ? '#665f51' : '#c9c5c1',
+      }}
+    >
+      <span
+        className="absolute rounded-full bg-white shadow-[0_1px_3px_rgba(40,34,24,0.2)] transition-all duration-200"
+        style={{
+          top: 3,
+          left: on ? 21 : 3,
+          width: 20,
+          height: 20,
+        }}
+      />
+    </button>
+  );
+}
+
+function Card({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div
+      className={`bg-[#fcf9f6] border border-[#e5e2df] rounded-lg shadow-[0_1px_3px_rgba(40,34,24,0.05)] ${className}`}
+    >
+      {children}
+    </div>
+  );
+}
 
 export default function Home() {
   const { user, loading, signIn, logOut } = useAuth();
@@ -130,36 +162,86 @@ export default function Home() {
     }
   };
 
+  // ── Loading ────────────────────────────────────────────────────
   if (loading) {
     return (
-      <div className="flex h-screen items-center justify-center bg-zinc-950 text-zinc-50">
-        <Loader2 className="h-8 w-8 animate-spin text-emerald-500" />
+      <div className="flex h-screen items-center justify-center bg-[#d9d1c0] text-[#2a2620]">
+        <div className="h-8 w-8 rounded-full border-2 border-[#665f51] border-t-transparent animate-spin" />
       </div>
     );
   }
 
+  // ── Landing ────────────────────────────────────────────────────
   if (!user) {
     return (
-      <div className="flex min-h-screen flex-col bg-zinc-950 text-zinc-50">
-        <header className="flex items-center justify-between p-6 border-b border-zinc-800">
-          <div className="flex items-center gap-2">
-            <Keyboard className="h-6 w-6 text-emerald-500" />
-            <span className="text-xl font-bold tracking-tight">TypeMind</span>
-          </div>
-          <Button onClick={signIn} variant="outline" className="text-zinc-950">
-            Sign In
-          </Button>
-        </header>
-        <main className="flex-1 flex flex-col items-center justify-center p-6 text-center">
-          <h1 className="text-5xl md:text-7xl font-bold tracking-tight mb-6">
-            Master typing with <span className="text-emerald-500">AI</span>
-          </h1>
-          <p className="text-xl text-zinc-400 max-w-2xl mb-10">
-            TypeMind analyzes your keystrokes and uses Gemini AI to generate personalized typing lessons targeting your weakest keys.
-          </p>
-          <Button onClick={signIn} size="lg" className="text-lg px-8 py-6 bg-emerald-600 hover:bg-emerald-700 text-white border-none">
-            Get Started for Free
-          </Button>
+      <div className="flex min-h-screen flex-col bg-[#d9d1c0] text-[#2a2620]">
+        <Nav user={null} onSignIn={signIn} onSignOut={() => {}} />
+        <main className="flex-1 px-6">
+          <section className="max-w-[640px] mx-auto pt-24 pb-16 text-center">
+            <div className="text-[0.7rem] font-medium uppercase tracking-[0.12em] text-[#7b7771] mb-5">
+              AI-powered typing tutor
+            </div>
+            <h1 className="font-serif font-bold text-[#2a2620] leading-[1.1] tracking-[-0.03em] mb-6"
+                style={{ fontSize: 'clamp(2.8rem, 6vw, 4.5rem)' }}>
+              Master typing<br />with AI
+            </h1>
+            <p className="text-[1.1rem] text-[#665f51] leading-[1.7] max-w-[460px] mx-auto mb-10">
+              TypeMind analyzes your keystrokes and uses AI to generate
+              personalized lessons targeting your weakest keys.
+            </p>
+            <button
+              onClick={signIn}
+              className="font-serif font-semibold text-base text-white bg-[#665f51] hover:bg-[#3d3830] border-none rounded-lg px-9 py-3.5 cursor-pointer transition-colors tracking-[0.01em]"
+            >
+              Begin your session
+            </button>
+          </section>
+
+          <section className="max-w-[860px] mx-auto grid grid-cols-1 md:grid-cols-3 gap-3 pb-12">
+            {[
+              { title: 'Personalized lessons', body: 'Every session is generated fresh based on your specific error patterns and keystroke data.' },
+              { title: 'Real-time feedback', body: 'See exactly where you struggle — errors surface immediately so you can correct and learn.' },
+              { title: 'Focused practice', body: 'Target individual keys, control session length, and choose topics that keep you engaged.' },
+            ].map(f => (
+              <div key={f.title} className="bg-[#fcf9f6] border border-[#e5e2df] rounded-lg p-5 shadow-[0_1px_3px_rgba(40,34,24,0.06)]">
+                <div className="font-serif font-bold text-[0.95rem] text-[#2a2620] mb-2">{f.title}</div>
+                <div className="font-serif text-[0.85rem] text-[#665f51] leading-[1.65]">{f.body}</div>
+              </div>
+            ))}
+          </section>
+
+          <section className="max-w-[640px] mx-auto pb-20">
+            <div className="bg-[#fcf9f6] border border-[#dcd9d7] rounded-lg shadow-[0_2px_8px_rgba(40,34,24,0.07)] px-9 py-7">
+              <div className="text-[0.65rem] font-medium uppercase tracking-[0.1em] text-[#7b7771] mb-4">
+                Sample lesson
+              </div>
+              <div className="font-mono text-base leading-[2] tracking-[0.02em] mb-4">
+                {'The shift key is your friend. Hold it firmly'.split('').map((ch, i) => (
+                  <span
+                    key={i}
+                    style={{
+                      color: i < 24 ? '#2a2620' : i === 24 ? 'transparent' : '#c9c5c1',
+                      background: i === 24 ? 'rgba(102,95,81,0.15)' : 'transparent',
+                      outline: i === 24 ? '1.5px solid #665f51' : 'none',
+                      borderRadius: 2,
+                    }}
+                  >
+                    {ch}
+                  </span>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                {['42 wpm', '97% accuracy', '2 errors'].map(p => (
+                  <span
+                    key={p}
+                    className="font-serif text-[0.72rem] font-medium text-[#665f51] bg-[#f1edea] border border-[#e5e2df] rounded-full px-3 py-0.5"
+                  >
+                    {p}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </section>
         </main>
       </div>
     );
@@ -168,23 +250,12 @@ export default function Home() {
   const weakKeys = stats?.weakKeys && typeof stats.weakKeys === 'object' ? stats.weakKeys : {};
   const bigramData = stats?.bigrams && typeof stats.bigrams === 'object' ? stats.bigrams : {};
 
-  return (
-    <div className="flex min-h-screen flex-col bg-zinc-950 text-zinc-50">
-      <header className="flex items-center justify-between p-6 border-b border-zinc-800">
-        <div className="flex items-center gap-2">
-          <Keyboard className="h-6 w-6 text-emerald-500" />
-          <span className="text-xl font-bold tracking-tight">TypeMind</span>
-        </div>
-        <div className="flex items-center gap-4">
-          <div className="text-sm text-zinc-400 hidden sm:block">{user.email}</div>
-          <Button onClick={logOut} variant="ghost" size="icon" className="text-zinc-400 hover:text-white">
-            <LogOut className="h-5 w-5" />
-          </Button>
-        </div>
-      </header>
-
-      <main className="flex-1 p-6 max-w-5xl mx-auto w-full">
-        {isTyping ? (
+  // ── Typing session ────────────────────────────────────────────
+  if (isTyping) {
+    return (
+      <div className="flex min-h-screen flex-col bg-[#d9d1c0] text-[#2a2620]">
+        <Nav user={user} onSignIn={signIn} onSignOut={logOut} />
+        <main className="flex-1">
           <TypingTest
             weakKeys={weakKeys}
             bigrams={bigramData}
@@ -200,302 +271,328 @@ export default function Home() {
             onComplete={() => setIsTyping(false)}
             onCancel={() => setIsTyping(false)}
           />
-        ) : (
-          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-            <div className="flex items-center justify-between">
-              <h2 className="text-3xl font-bold tracking-tight">Dashboard</h2>
-              <Button onClick={() => setIsTyping(true)} className="bg-emerald-600 hover:bg-emerald-700 text-white">
-                <Play className="h-4 w-4 mr-2" />
-                Start AI Lesson
-              </Button>
+        </main>
+      </div>
+    );
+  }
+
+  // ── Dashboard ──────────────────────────────────────────────────
+  const trend = recentLessons.length >= 2 ? [...recentLessons].reverse().map((l: any) => l.wpm) : [];
+
+  return (
+    <div className="flex min-h-screen flex-col bg-[#d9d1c0] text-[#2a2620]">
+      <Nav user={user} onSignIn={signIn} onSignOut={logOut} />
+      <main className="flex-1 pt-10 pb-20">
+        <div className="max-w-[720px] mx-auto px-6 flex flex-col gap-3">
+
+          {/* Header */}
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-serif text-[1.9rem] font-bold text-[#2a2620] tracking-[-0.02em]">Dashboard</h2>
+            <button
+              onClick={() => setIsTyping(true)}
+              className="font-serif text-[0.9rem] font-semibold text-white bg-[#665f51] hover:bg-[#3d3830] border-none rounded-md px-5 py-2 cursor-pointer transition-colors"
+            >
+              Start AI lesson
+            </button>
+          </div>
+
+          {/* Stats grid */}
+          <div className="grid grid-cols-3 gap-2.5">
+            {[
+              { label: 'Average WPM', value: Math.round(stats?.avgWpm || 0) },
+              { label: 'Average accuracy', value: `${Math.round(stats?.avgAccuracy || 0)}%` },
+              { label: 'Lessons completed', value: stats?.totalLessons || 0 },
+            ].map(s => (
+              <Card key={s.label} className="p-5 flex flex-col gap-1.5">
+                <div className="font-serif text-[0.78rem] text-[#7b7771]">{s.label}</div>
+                <div className="font-serif text-[2.4rem] font-bold text-[#2a2620] leading-none">{s.value}</div>
+              </Card>
+            ))}
+          </div>
+
+          {/* AI insight (only if there's actual data) */}
+          {stats && (Object.keys(weakKeys).length > 0 || (stats?.totalLessons ?? 0) > 0) && (
+            <div className="bg-[#fcf9f6] border border-[#e5e2df] border-l-[3px] border-l-[#665f51] rounded-md py-4 px-5 shadow-[0_1px_3px_rgba(40,34,24,0.05)]">
+              <div className="font-serif text-[0.65rem] font-medium uppercase tracking-[0.1em] text-[#7b7771] mb-3">
+                AI insight
+              </div>
+              <div className="font-serif text-[0.9rem] text-[#2a2620] leading-[1.65] italic">
+                {Object.keys(weakKeys).length > 0
+                  ? <>You consistently slow down on {topWeakKeys(weakKeys).map((k, i, arr) => (
+                      <span key={k}>
+                        <strong className="not-italic font-semibold">{k}</strong>{i < arr.length - 1 ? (i === arr.length - 2 ? ', and ' : ', ') : ''}
+                      </span>
+                    ))}. Focus on keeping your hands relaxed — tension slows your reach.</>
+                  : <>Run your first lesson — TypeMind will start tracking your keystrokes and surface insights here.</>
+                }
+              </div>
             </div>
+          )}
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 flex flex-col">
-                <div className="flex items-center gap-2 text-zinc-400 mb-2">
-                  <Activity className="h-5 w-5" />
-                  <span className="font-medium">Average WPM</span>
-                </div>
-                <div className="text-4xl font-bold">{Math.round(stats?.avgWpm || 0)}</div>
-              </div>
+          {/* Weak keys */}
+          {Object.keys(weakKeys).length > 0 && (
+            <Card className="p-5">
+              <div className="font-serif text-base font-bold text-[#2a2620] mb-1">Weak keys</div>
+              <div className="font-serif text-[0.78rem] text-[#7b7771] mb-3.5">Keys where you make the most errors</div>
+              <KeyboardHeatmap weakKeys={weakKeys} />
+            </Card>
+          )}
 
-              <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 flex flex-col">
-                <div className="flex items-center gap-2 text-zinc-400 mb-2">
-                  <Target className="h-5 w-5" />
-                  <span className="font-medium">Average Accuracy</span>
-                </div>
-                <div className="text-4xl font-bold">{Math.round(stats?.avgAccuracy || 0)}%</div>
-              </div>
-
-              <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 flex flex-col">
-                <div className="flex items-center gap-2 text-zinc-400 mb-2">
-                  <Trophy className="h-5 w-5" />
-                  <span className="font-medium">Lessons Completed</span>
-                </div>
-                <div className="text-4xl font-bold">{stats?.totalLessons || 0}</div>
-              </div>
-            </div>
-
-            {/* Keyboard heatmap */}
-            {Object.keys(weakKeys).length > 0 && (
-              <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800">
-                <h3 className="text-lg font-semibold mb-4">Weak Keys</h3>
-                <KeyboardHeatmap weakKeys={weakKeys} />
-              </div>
-            )}
-
-            {/* Topic selector */}
-            <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800">
-              <h3 className="text-lg font-semibold mb-3">Lesson Topic</h3>
-              <div className="flex flex-wrap gap-2">
-                {PRESET_TOPICS.map(t => (
-                  <button
-                    key={t.value}
-                    onClick={() => handleTopicChange(t.value)}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                      topic === t.value
-                        ? 'bg-emerald-600 text-white'
-                        : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'
-                    }`}
-                  >
-                    {t.label}
-                  </button>
-                ))}
-                <button
-                  onClick={() => { if (PRESET_VALUES.has(topic)) handleTopicChange('custom:'); }}
-                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    !PRESET_VALUES.has(topic)
-                      ? 'bg-emerald-600 text-white'
-                      : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'
-                  }`}
+          {/* Lesson topic */}
+          <Card className="p-5">
+            <div className="font-serif text-base font-bold text-[#2a2620] mb-1">Lesson topic</div>
+            <div className="font-serif text-[0.78rem] text-[#7b7771] mb-3.5">AI will generate text from this subject area</div>
+            <div className="flex flex-wrap gap-1.5">
+              {PRESET_TOPICS.map(t => (
+                <Chip
+                  key={t.value}
+                  active={topic === t.value}
+                  onClick={() => handleTopicChange(t.value)}
                 >
-                  Custom
-                </button>
-              </div>
-              {!PRESET_VALUES.has(topic) && (
-                <input
-                  type="text"
-                  placeholder="e.g. cooking, music, sports..."
-                  value={topic.startsWith('custom:') ? topic.slice(7) : topic}
-                  onChange={(e) => handleTopicChange(`custom:${e.target.value}`)}
-                  onBlur={(e) => {
-                    const val = e.target.value.trim();
-                    if (!val) handleTopicChange('general');
+                  {t.label}
+                </Chip>
+              ))}
+              <Chip
+                active={!PRESET_VALUES.has(topic)}
+                onClick={() => { if (PRESET_VALUES.has(topic)) handleTopicChange('custom:'); }}
+              >
+                Custom
+              </Chip>
+            </div>
+            {!PRESET_VALUES.has(topic) && (
+              <input
+                type="text"
+                placeholder="e.g. cooking, music, sports..."
+                value={topic.startsWith('custom:') ? topic.slice(7) : topic}
+                onChange={(e) => handleTopicChange(`custom:${e.target.value}`)}
+                onBlur={(e) => {
+                  const val = e.target.value.trim();
+                  if (!val) handleTopicChange('general');
+                }}
+                className="mt-3 w-full max-w-xs px-3 py-2 rounded-md bg-[#f6f3f1] border border-[#dcd9d7] text-[#2a2620] text-sm placeholder-[#b5b0aa] focus:outline-none focus:border-[#665f51] font-serif"
+                autoFocus
+              />
+            )}
+          </Card>
+
+          {/* Session length */}
+          <Card className="p-5">
+            <div className="font-serif text-base font-bold text-[#2a2620] mb-1">Session length</div>
+            <div className="font-serif text-[0.78rem] text-[#7b7771] mb-3.5">Number of typing blocks per session</div>
+            <div className="flex gap-2">
+              {[1, 2, 3].map(n => (
+                <button
+                  key={n}
+                  onClick={() => setSessionBlocks(n)}
+                  className="font-serif text-[0.85rem] rounded-md px-5 py-1.5 cursor-pointer transition-colors border"
+                  style={{
+                    fontWeight: sessionBlocks === n ? 600 : 400,
+                    color: sessionBlocks === n ? '#fff' : '#665f51',
+                    background: sessionBlocks === n ? '#665f51' : '#f1edea',
+                    borderColor: sessionBlocks === n ? '#665f51' : '#dcd9d7',
                   }}
-                  className="mt-3 w-full max-w-xs px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-50 text-sm placeholder-zinc-500 focus:outline-none focus:border-emerald-600"
-                  autoFocus
-                />
+                >
+                  {n} {n === 1 ? 'block' : 'blocks'}
+                </button>
+              ))}
+            </div>
+          </Card>
+
+          {/* Focus keys */}
+          <Card className="p-5">
+            <div className="flex items-center justify-between mb-1">
+              <div className="font-serif text-base font-bold text-[#2a2620]">Focus keys</div>
+              {focusKeys.length > 0 && (
+                <button
+                  onClick={() => setFocusKeys([])}
+                  className="font-serif text-[0.72rem] text-[#7b7771] bg-transparent border-none cursor-pointer hover:text-[#2a2620] transition-colors"
+                >
+                  Clear all
+                </button>
               )}
             </div>
-
-            {/* Session length selector */}
-            <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800">
-              <h3 className="text-lg font-semibold mb-1">Session Length</h3>
-              <p className="text-sm text-zinc-400 mb-3">Number of typing blocks per session</p>
-              <div className="flex gap-2">
-                {[1, 2, 3].map(n => (
-                  <button
-                    key={n}
-                    onClick={() => setSessionBlocks(n)}
-                    className={`px-5 py-2 rounded-lg text-sm font-medium transition-colors ${
-                      sessionBlocks === n
-                        ? 'bg-emerald-600 text-white'
-                        : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'
-                    }`}
-                  >
-                    {n} {n === 1 ? 'block' : 'blocks'}
-                  </button>
-                ))}
-              </div>
+            <div className="font-serif text-[0.78rem] text-[#7b7771] mb-3.5">
+              {focusKeys.length > 0
+                ? `Lesson text will emphasize: ${focusKeys.map(k => k.toUpperCase()).join(', ')}`
+                : 'Pick keys to practice, or leave empty to let AI decide'}
             </div>
-
-            {/* Focus Keys picker */}
-            <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800">
-              <div className="flex items-center justify-between mb-1">
-                <div className="flex items-center gap-2">
-                  <Crosshair className={`h-5 w-5 ${focusKeys.length > 0 ? 'text-emerald-500' : 'text-zinc-500'}`} />
-                  <h3 className="text-lg font-semibold">Focus Keys</h3>
+            <div className="flex flex-col items-center gap-1.5">
+              {ROWS.map((row, ri) => (
+                <div key={ri} className="flex gap-1.5" style={{ paddingLeft: ROW_OFFSETS[ri] }}>
+                  {row.map(k => {
+                    const sel = focusKeys.includes(k);
+                    return (
+                      <button
+                        key={k}
+                        onClick={() => {
+                          setFocusKeys(prev =>
+                            prev.includes(k) ? prev.filter(x => x !== k) : [...prev, k]
+                          );
+                        }}
+                        className="flex items-center justify-center w-[34px] h-[34px] font-mono text-xs font-semibold rounded-[5px] cursor-pointer transition-all"
+                        style={{
+                          background: sel ? '#665f51' : '#fcf9f6',
+                          color: sel ? '#fff' : '#665f51',
+                          border: sel ? '1px solid #665f51' : '1px solid #c9c5c1',
+                          borderBottom: sel ? '3px solid #3d3830' : '3px solid #b5b0aa',
+                        }}
+                      >
+                        {k}
+                      </button>
+                    );
+                  })}
                 </div>
-                {focusKeys.length > 0 && (
-                  <button
-                    onClick={() => setFocusKeys([])}
-                    className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
-                  >
-                    Clear all
-                  </button>
-                )}
-              </div>
-              <p className="text-sm text-zinc-400 mb-4">
-                {focusKeys.length > 0
-                  ? `Lesson text will emphasize: ${focusKeys.join(', ').toUpperCase()}`
-                  : 'Pick specific keys to practice — or leave empty to let the AI choose based on your mistakes'}
-              </p>
-              <div className="space-y-2">
-                {[
-                  ['q','w','e','r','t','y','u','i','o','p'],
-                  ['a','s','d','f','g','h','j','k','l'],
-                  ['z','x','c','v','b','n','m'],
-                ].map((row, rowIndex) => (
-                  <div key={rowIndex} className="flex justify-center gap-1.5" style={{ paddingLeft: rowIndex === 1 ? '16px' : rowIndex === 2 ? '40px' : '0' }}>
-                    {row.map(key => {
-                      const isSelected = focusKeys.includes(key);
-                      return (
-                        <button
-                          key={key}
-                          onClick={() => {
-                            setFocusKeys(prev =>
-                              prev.includes(key)
-                                ? prev.filter(k => k !== key)
-                                : [...prev, key]
-                            );
-                          }}
-                          className={`w-10 h-10 rounded-lg text-sm font-mono font-semibold uppercase transition-all ${
-                            isSelected
-                              ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20 scale-105'
-                              : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'
-                          }`}
-                        >
-                          {key}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ))}
-              </div>
+              ))}
             </div>
+          </Card>
 
-            {/* Strict mode toggle */}
-            <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <ShieldCheck className={`h-5 w-5 ${strictMode ? 'text-emerald-500' : 'text-zinc-500'}`} />
-                <div>
-                  <h3 className="text-lg font-semibold">Strict Mode</h3>
-                  <p className="text-sm text-zinc-400">Block advancing to the next letter until you type the correct one</p>
-                </div>
+          {/* Toggles */}
+          {[
+            { label: 'Strict mode', sub: 'Block advancing to the next letter until you type the correct one', val: strictMode, set: handleStrictModeToggle },
+            { label: 'Audio feedback', sub: 'Play subtle sounds on keystrokes and errors to anchor focus', val: audioEnabled, set: handleAudioToggle },
+            { label: 'Calm mode', sub: 'Minimal interface with no animations — less visual noise, more focus', val: calmMode, set: handleCalmModeToggle },
+          ].map(({ label, sub, val, set }) => (
+            <Card key={label} className="p-5 flex items-center justify-between gap-4">
+              <div>
+                <div className="font-serif text-base font-semibold text-[#2a2620] mb-0.5">{label}</div>
+                <div className="font-serif text-[0.8rem] text-[#7b7771] leading-[1.5]">{sub}</div>
               </div>
-              <button
-                onClick={handleStrictModeToggle}
-                className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full transition-colors duration-200 ${
-                  strictMode ? 'bg-emerald-600' : 'bg-zinc-700'
-                }`}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition-transform duration-200 mt-1 ${
-                    strictMode ? 'translate-x-6 ml-0.5' : 'translate-x-1'
-                  }`}
-                />
-              </button>
-            </div>
+              <Toggle on={val} onChange={set} />
+            </Card>
+          ))}
 
-            {/* Audio feedback toggle */}
-            <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <Volume2 className={`h-5 w-5 ${audioEnabled ? 'text-emerald-500' : 'text-zinc-500'}`} />
-                <div>
-                  <h3 className="text-lg font-semibold">Audio Feedback</h3>
-                  <p className="text-sm text-zinc-400">Play subtle sounds on keystrokes and errors to anchor focus</p>
-                </div>
+          {/* WPM trend */}
+          {trend.length >= 2 && (
+            <Card className="p-5">
+              <div className="flex items-center justify-between mb-4">
+                <div className="font-serif text-base font-bold text-[#2a2620]">WPM trend</div>
+                <span className="font-serif text-[0.72rem] text-[#7b7771]">Last {trend.length} lessons</span>
               </div>
-              <button
-                onClick={handleAudioToggle}
-                className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full transition-colors duration-200 ${
-                  audioEnabled ? 'bg-emerald-600' : 'bg-zinc-700'
-                }`}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition-transform duration-200 mt-1 ${
-                    audioEnabled ? 'translate-x-6 ml-0.5' : 'translate-x-1'
-                  }`}
-                />
-              </button>
-            </div>
-
-            {/* Calm mode toggle */}
-            <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <Moon className={`h-5 w-5 ${calmMode ? 'text-emerald-500' : 'text-zinc-500'}`} />
-                <div>
-                  <h3 className="text-lg font-semibold">Calm Mode</h3>
-                  <p className="text-sm text-zinc-400">Minimal interface with no animations — less visual noise, more focus</p>
-                </div>
-              </div>
-              <button
-                onClick={handleCalmModeToggle}
-                className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full transition-colors duration-200 ${
-                  calmMode ? 'bg-emerald-600' : 'bg-zinc-700'
-                }`}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition-transform duration-200 mt-1 ${
-                    calmMode ? 'translate-x-6 ml-0.5' : 'translate-x-1'
-                  }`}
-                />
-              </button>
-            </div>
-
-            {/* WPM Trend */}
-            {recentLessons.length >= 2 && (
-              <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-semibold">WPM Trend</h3>
-                  <span className="text-sm text-zinc-500">Last {recentLessons.length} lessons</span>
-                </div>
-                <div className="flex items-center gap-6">
-                  <Sparkline
-                    data={[...recentLessons].reverse().map((l: any) => l.wpm)}
-                    width={400}
-                    height={64}
-                  />
-                  <div className="flex gap-6 text-sm text-zinc-400 shrink-0">
-                    <div>
-                      <div className="text-zinc-500">Low</div>
-                      <div className="font-mono text-zinc-50">{Math.min(...recentLessons.map((l: any) => l.wpm))} WPM</div>
-                    </div>
-                    <div>
-                      <div className="text-zinc-500">High</div>
-                      <div className="font-mono text-zinc-50">{Math.max(...recentLessons.map((l: any) => l.wpm))} WPM</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div className="space-y-4">
-              <h3 className="text-xl font-semibold">Recent Lessons</h3>
-              {recentLessons.length === 0 ? (
-                <div className="p-8 text-center rounded-2xl border border-dashed border-zinc-800 text-zinc-500">
-                  No lessons completed yet. Start your first AI lesson!
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {recentLessons.slice(0, 5).map((lesson) => (
-                    <div key={lesson.id} className="flex items-center justify-between p-4 rounded-xl bg-zinc-900/50 border border-zinc-800/50">
-                      <div className="flex flex-col">
-                        <span className="font-medium">{lesson.wpm} WPM</span>
-                        <span className="text-sm text-zinc-500">{new Date(lesson.createdAt?.toDate()).toLocaleDateString()}</span>
-                      </div>
-                      <div className="flex items-center gap-4">
-                        <div className="text-right">
-                          <div className="text-sm text-zinc-400">Accuracy</div>
-                          <div className="font-medium">{lesson.accuracy}%</div>
-                        </div>
-                        <div className="text-right hidden sm:block">
-                          <div className="text-sm text-zinc-400">Raw</div>
-                          <div className="font-medium text-zinc-500">{lesson.rawAccuracy ?? lesson.accuracy}%</div>
-                        </div>
-                        <div className="text-right hidden sm:block">
-                          <div className="text-sm text-zinc-400">Duration</div>
-                          <div className="font-medium">{lesson.duration}s</div>
-                        </div>
-                      </div>
+              <div className="flex items-center gap-8 flex-wrap">
+                <Sparkline data={trend} width={340} height={60} />
+                <div className="flex gap-6">
+                  {[
+                    { label: 'Low', val: Math.min(...trend) },
+                    { label: 'High', val: Math.max(...trend) },
+                  ].map(s => (
+                    <div key={s.label}>
+                      <div className="font-serif text-[0.68rem] text-[#7b7771] mb-0.5">{s.label}</div>
+                      <div className="font-mono text-[0.9rem] font-semibold text-[#2a2620]">{s.val} wpm</div>
                     </div>
                   ))}
                 </div>
-              )}
-            </div>
+              </div>
+            </Card>
+          )}
+
+          {/* Recent lessons */}
+          <div>
+            <h3 className="font-serif text-[1.1rem] font-bold text-[#2a2620] mb-2.5">Recent lessons</h3>
+            {recentLessons.length === 0 ? (
+              <div className="bg-[#fcf9f6] border border-dashed border-[#dcd9d7] rounded-lg p-8 text-center font-serif text-[0.9rem] text-[#7b7771]">
+                No lessons completed yet. Start your first AI lesson.
+              </div>
+            ) : (
+              <div className="flex flex-col gap-1">
+                {recentLessons.slice(0, 5).map((lesson) => (
+                  <div
+                    key={lesson.id}
+                    className="flex items-center bg-[#fcf9f6] border border-[#e5e2df] rounded-md py-3 px-4.5 gap-4"
+                    style={{ paddingLeft: 18, paddingRight: 18 }}
+                  >
+                    <div className="flex-1">
+                      <div className="font-serif text-base font-bold text-[#2a2620]">{lesson.wpm} WPM</div>
+                      <div className="font-serif text-[0.75rem] text-[#7b7771]">
+                        {lesson.createdAt?.toDate ? new Date(lesson.createdAt.toDate()).toLocaleDateString() : ''}
+                      </div>
+                    </div>
+                    {[
+                      { label: 'Accuracy', val: `${lesson.accuracy}%` },
+                      { label: 'Raw', val: `${lesson.rawAccuracy ?? lesson.accuracy}%` },
+                      { label: 'Duration', val: `${lesson.duration}s` },
+                    ].map(s => (
+                      <div key={s.label} className="text-right">
+                        <div className="font-serif text-[0.68rem] text-[#7b7771]">{s.label}</div>
+                        <div className="font-serif text-[0.9rem] font-semibold text-[#665f51]">{s.val}</div>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-        )}
+        </div>
       </main>
     </div>
+  );
+}
+
+function topWeakKeys(weakKeys: Record<string, number>): string[] {
+  return Object.entries(weakKeys)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 3)
+    .map(([k]) => k);
+}
+
+function Chip({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="font-serif text-[0.82rem] rounded-full px-4 py-1 cursor-pointer transition-all border"
+      style={{
+        fontWeight: active ? 600 : 400,
+        color: active ? '#fff' : '#665f51',
+        background: active ? '#665f51' : '#f1edea',
+        borderColor: active ? '#665f51' : '#dcd9d7',
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Nav({
+  user,
+  onSignIn,
+  onSignOut,
+}: {
+  user: { email?: string | null } | null;
+  onSignIn: () => void;
+  onSignOut: () => void;
+}) {
+  return (
+    <nav className="flex items-center px-10 h-14 bg-[#fcf9f6] border-b border-[#e5e2df] sticky top-0 z-10">
+      <div className="cursor-pointer mr-8 shrink-0">
+        <span className="font-serif font-bold text-[1.1rem] text-[#2a2620] tracking-[-0.02em]">TypeMind</span>
+      </div>
+      <div className="flex items-center gap-4 ml-auto">
+        {user ? (
+          <>
+            <span className="font-serif text-[0.8rem] text-[#7b7771] hidden sm:block">{user.email}</span>
+            <button
+              onClick={onSignOut}
+              className="font-serif text-[0.8rem] text-[#665f51] bg-transparent border border-[#c9c5c1] rounded-md px-3 py-1 cursor-pointer hover:bg-[#f1edea] transition-colors"
+            >
+              Sign out
+            </button>
+          </>
+        ) : (
+          <button
+            onClick={onSignIn}
+            className="font-serif text-[0.875rem] font-semibold text-white bg-[#665f51] hover:bg-[#3d3830] border-none rounded-md px-4 py-1.5 cursor-pointer transition-colors"
+          >
+            Sign in
+          </button>
+        )}
+      </div>
+    </nav>
   );
 }

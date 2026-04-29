@@ -12,7 +12,13 @@
       "Bash(npm install:*)",
       "Bash(npx vitest:*)",
       "Bash(npx tsc:*)",
-      "mcp__aidesigner__get_credit_status"
+      "mcp__aidesigner__get_credit_status",
+      "WebFetch(domain:api.anthropic.com)",
+      "Bash(mkdir -p /tmp/design)",
+      "Bash(gunzip -c \"C:/Users/millh/.claude/projects/C--Users-millh-Local-Documents-dev-ai-typing/aa076768-4ba0-4a76-8494-0eab7697c677/tool-results/webfetch-1777481073784-lcj3cw.bin\")",
+      "Read(//tmp/design/**)",
+      "Bash(tar -xf extracted.tar)",
+      "Bash(npx eslint *)"
     ]
   },
   "enableAllProjectMcpServers": true,

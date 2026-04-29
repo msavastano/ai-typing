@@ -1,14 +1,11 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Button } from '@/components/ui/button';
-import { Keyboard, Loader2, Pause, Play, RefreshCw, RotateCcw, X } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { db } from '@/lib/firebase';
 import { collection, addDoc, doc, runTransaction, serverTimestamp } from 'firebase/firestore';
 import {
-  applyDecay,
   countCorrectChars,
   calculateWpm,
   countUncorrectedErrors,
@@ -31,15 +28,13 @@ const FALLBACK_TEXTS = [
   "The ancient library of Alexandria was once the greatest center of knowledge in the world. Scholars traveled from distant lands to study its vast collection of scrolls and manuscripts.",
 ];
 
-// Variable-ratio reinforcement: reward at unpredictable intervals (10-30 range)
 function generateComboThreshold(): number {
   return Math.floor(Math.random() * 21) + 10;
 }
 
-// Focus decay: if rolling CV of keystroke intervals exceeds this, nudge
-const FOCUS_WINDOW = 15; // last N keystrokes
-const FOCUS_CV_THRESHOLD = 1.2; // coefficient of variation threshold
-const FOCUS_COOLDOWN_MS = 30_000; // don't nudge more than once per 30s
+const FOCUS_WINDOW = 15;
+const FOCUS_CV_THRESHOLD = 1.2;
+const FOCUS_COOLDOWN_MS = 30_000;
 const FOCUS_NUDGES = [
   'Take a breath — you\'ve got this.',
   'Slow and steady wins the race.',
@@ -85,10 +80,8 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
   const [focusNudge, setFocusNudge] = useState<string | null>(null);
   const [results, setResults] = useState<{ wpm: number; accuracy: number; rawAccuracy: number; duration: number; bestCombo: number } | null>(null);
   const [focusRating, setFocusRating] = useState<number | null>(null);
-  // Session chunking: break lesson into multiple short blocks
   const [currentChunk, setCurrentChunk] = useState(1);
   const [chunkTransition, setChunkTransition] = useState(false);
-  // Accumulate stats across chunks
   const chunkStats = useRef({ totalCorrect: 0, totalChars: 0, totalErrors: 0, totalDuration: 0 });
 
   const inputRef = useRef<HTMLInputElement>(null);
@@ -97,14 +90,11 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
   const charRefs = useRef<(HTMLSpanElement | null)[]>([]);
   const errorPopId = useRef(0);
   const pauseStartRef = useRef(0);
-  // Variable-ratio thresholds for combo rewards (unpredictable intervals)
   const nextComboThreshold = useRef(generateComboThreshold());
-  // Focus decay: track recent inter-keystroke intervals
   const lastKeystrokeTime = useRef(0);
   const recentIntervals = useRef<number[]>([]);
   const lastNudgeTime = useRef(0);
 
-  // Keyboard shortcuts — use a ref so the listener registers once but always sees current state
   const shortcutRef = useRef<(e: KeyboardEvent) => void>(() => {});
   useEffect(() => {
     const handler = (e: KeyboardEvent) => shortcutRef.current(e);
@@ -159,7 +149,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
     } finally {
       setLoading(false);
     }
-  }, [weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons, topic]);
+  }, [weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons, topic, totalChunks, focusKeys]);
 
   useEffect(() => {
     if (!hasGenerated.current) {
@@ -210,16 +200,13 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
       setStartTime(now);
     }
 
-    // Focus decay detection: track inter-keystroke timing
     if (val.length > input.length && lastKeystrokeTime.current > 0) {
       const interval = now - lastKeystrokeTime.current;
-      // Ignore very long pauses (>5s) — likely deliberate pause, not drift
       if (interval < 5000) {
         recentIntervals.current.push(interval);
         if (recentIntervals.current.length > FOCUS_WINDOW) {
           recentIntervals.current.shift();
         }
-        // Check variance when we have enough data
         if (recentIntervals.current.length >= FOCUS_WINDOW && now - lastNudgeTime.current > FOCUS_COOLDOWN_MS) {
           const intervals = recentIntervals.current;
           const mean = intervals.reduce((a, b) => a + b, 0) / intervals.length;
@@ -235,14 +222,12 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
     }
     lastKeystrokeTime.current = now;
 
-    // Check for mistakes on the newly typed character
     if (val.length > input.length) {
       const newCharIndex = val.length - 1;
       const expectedChar = text[newCharIndex];
       const typedChar = val[newCharIndex];
 
       if (expectedChar && typedChar === expectedChar) {
-        // Correct keystroke — build combo
         if (audioEnabled) playCorrectSound();
         setCombo(prev => {
           const next = prev + 1;
@@ -265,14 +250,12 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
           ...prev,
           [expectedChar.toLowerCase()]: (prev[expectedChar.toLowerCase()] || 0) + 1
         }));
-        // Track bigram: "expected→typed"
         const bigramKey = `${expectedChar.toLowerCase()}→${typedChar.toLowerCase()}`;
         setSessionBigrams(prev => ({
           ...prev,
           [bigramKey]: (prev[bigramKey] || 0) + 1
         }));
 
-        // Spawn floating error pop (suppressed in calm mode)
         const charEl = charRefs.current[newCharIndex];
         const containerEl = textContainerRef.current;
         if (!calmMode && charEl && containerEl) {
@@ -290,7 +273,6 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
           }, 600);
         }
 
-        // In strict mode, don't advance past the error
         if (strictMode) return;
       }
     }
@@ -304,11 +286,9 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
   };
 
   const advanceChunk = () => {
-    // Show transition screen, then generate next chunk — keep it visible until text is ready
     setChunkTransition(true);
     setTimeout(async () => {
       setCurrentChunk(prev => prev + 1);
-      // Reset per-chunk state but keep accumulated mistakes/bigrams
       setInput('');
       setStartTime(null);
       setEndTime(null);
@@ -320,7 +300,6 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
       setFocusNudge(null);
       lastKeystrokeTime.current = 0;
       recentIntervals.current = [];
-      // Generate new text for the next chunk (currentChunk closure value = previous chunk's 1-based index, works as 0-based index for the next chunk)
       try {
         const response = await fetch('/api/generate-lesson', {
           method: 'POST',
@@ -333,7 +312,6 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
       } catch {
         setText(FALLBACK_TEXTS[Math.floor(Math.random() * FALLBACK_TEXTS.length)]);
       }
-      // Hide transition screen only after new text is ready to prevent old text flash
       setChunkTransition(false);
       setTimeout(() => inputRef.current?.focus(), 100);
     }, 1500);
@@ -346,19 +324,16 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
     const correctChars = countCorrectChars(text, finalInput);
     const uncorrectedErrors = countUncorrectedErrors(text, finalInput);
 
-    // Accumulate stats across chunks
     chunkStats.current.totalCorrect += correctChars;
     chunkStats.current.totalChars += text.length;
     chunkStats.current.totalErrors += totalErrors;
     chunkStats.current.totalDuration += durationSeconds;
 
-    // If more chunks remain, advance to next
     if (currentChunk < totalChunks) {
       advanceChunk();
       return;
     }
 
-    // Final chunk — compute aggregate stats and save
     setSaving(true);
     const stats = chunkStats.current;
     const wpm = calculateWpm(stats.totalCorrect, stats.totalDuration);
@@ -415,47 +390,33 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
     }
   };
 
-  // Find the end of the current sentence (for progressive reveal)
-  const getRevealBoundary = useCallback((pos: number): number => {
-    // Reveal up to the end of the current sentence from cursor position
-    const sentenceEnds = /[.!?]/g;
-    let match;
-    let boundary = text.length;
-    sentenceEnds.lastIndex = pos;
-    // Find the next sentence-ending punctuation after cursor
-    while ((match = sentenceEnds.exec(text)) !== null) {
-      // Include trailing space after punctuation
-      boundary = Math.min(text.length, match.index + 2);
-      break;
-    }
-    return boundary;
-  }, [text]);
-
   const renderText = () => {
     charRefs.current = [];
-    const revealEnd = getRevealBoundary(input.length);
-
     return text.split('').map((char, index) => {
-      let color = 'text-zinc-500';
-      const isBeyondReveal = index >= revealEnd;
+      let color = '#b5b0aa';
+      let bg = 'transparent';
+      let outline = 'none';
+      let textDecoration = 'none';
 
       if (index < input.length) {
         if (input[index] === char) {
-          color = 'text-zinc-50';
+          color = '#2a2620';
         } else {
-          color = 'text-red-500 bg-red-500/20 underline decoration-red-500 decoration-wavy';
+          color = '#7a3f3f';
+          bg = 'rgba(122,63,63,0.12)';
+          textDecoration = 'underline wavy #7a3f3f';
         }
       } else if (index === input.length) {
-        color = 'text-zinc-500 bg-zinc-800 animate-pulse';
-      } else if (isBeyondReveal) {
-        color = 'text-zinc-800';
+        bg = 'rgba(102,95,81,0.15)';
+        outline = '1.5px solid #665f51';
       }
 
       return (
         <span
           key={index}
           ref={el => { charRefs.current[index] = el; }}
-          className={`transition-colors duration-75 ${color}`}
+          style={{ color, background: bg, outline, textDecoration, borderRadius: 2 }}
+          className="transition-colors duration-75"
         >
           {char}
         </span>
@@ -463,12 +424,9 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
     });
   };
 
-  // Assign current shortcut handler (always sees latest state/closures)
   shortcutRef.current = (e: KeyboardEvent) => {
-    // Inactive during loading, saving, transitions, or results
     if (loading || saving || chunkTransition || results) return;
 
-    // Escape — toggle pause (only once typing has started)
     if (e.key === 'Escape') {
       e.preventDefault();
       if (startTime && !endTime) {
@@ -477,14 +435,12 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
       return;
     }
 
-    // Tab — re-focus the typing input
     if (e.key === 'Tab') {
       e.preventDefault();
       inputRef.current?.focus();
       return;
     }
 
-    // While paused, single-key shortcuts (input is disabled so these won't type)
     if (paused) {
       switch (e.key.toLowerCase()) {
         case 'r':
@@ -503,236 +459,348 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
     }
   };
 
+  // ── Chunk transition ───────────────────────────────────────────
   if (chunkTransition) {
-    const labels = ['Nice work!', 'Keep it up!', 'Almost there!'];
+    const labels = ['Nice work.', 'Keep it up.', 'Almost there.'];
     return (
-      <div className="flex flex-col items-center justify-center py-32 space-y-6 animate-in fade-in duration-300">
-        <div className="text-4xl font-bold text-emerald-400">{labels[currentChunk - 1] || 'Nice work!'}</div>
-        <p className="text-zinc-400">Next exercise loading...</p>
+      <div className="flex flex-col items-center justify-center py-32 space-y-6">
+        <div className="font-serif text-3xl font-bold text-[#665f51]">{labels[currentChunk - 1] || 'Nice work.'}</div>
+        <p className="font-serif text-[#7b7771]">Next exercise loading...</p>
         <div className="flex gap-2 mt-4">
           {Array.from({ length: totalChunks }, (_, i) => (
-            <div key={i} className={`w-3 h-3 rounded-full ${i < currentChunk ? 'bg-emerald-500' : 'bg-zinc-700'}`} />
+            <div
+              key={i}
+              className="w-2.5 h-2.5 rounded-full"
+              style={{ background: i < currentChunk ? '#665f51' : '#dcd9d7' }}
+            />
           ))}
         </div>
       </div>
     );
   }
 
+  // ── Results ────────────────────────────────────────────────────
   if (results) {
-    const focusLabels = ['Scattered', 'Okay', 'Locked In'];
+    const focusLabels = ['Scattered', 'Okay', 'Locked in'];
     return (
-      <div className="max-w-2xl mx-auto py-16 animate-in fade-in zoom-in-95 duration-300">
-        <h2 className="text-3xl font-bold tracking-tight text-center mb-10">Lesson Complete</h2>
+      <div className="bg-[#d9d1c0] min-h-[calc(100vh-56px)] py-20 px-6 flex items-start justify-center">
+        <div className="bg-[#fcf9f6] border border-[#e5e2df] rounded-[10px] p-10 max-w-[480px] w-full shadow-[0_4px_12px_rgba(40,34,24,0.08)]">
+          <div className="font-serif text-[0.7rem] font-medium uppercase tracking-[0.1em] text-[#7b7771] mb-2">
+            Practice complete
+          </div>
+          <h2 className="font-serif text-[2rem] font-bold text-[#2a2620] tracking-[-0.02em] mb-8">Well done.</h2>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-10">
-          <div className="p-5 rounded-2xl bg-zinc-900 border border-zinc-800 text-center">
-            <div className="text-sm text-zinc-400 mb-1">WPM</div>
-            <div className="text-3xl font-bold">{results.wpm}</div>
-          </div>
-          <div className="p-5 rounded-2xl bg-zinc-900 border border-zinc-800 text-center">
-            <div className="text-sm text-zinc-400 mb-1">Accuracy</div>
-            <div className="text-3xl font-bold">{results.accuracy}%</div>
-          </div>
-          <div className="p-5 rounded-2xl bg-zinc-900 border border-zinc-800 text-center">
-            <div className="text-sm text-zinc-400 mb-1">Raw Accuracy</div>
-            <div className="text-3xl font-bold text-zinc-500">{results.rawAccuracy}%</div>
-          </div>
-          <div className="p-5 rounded-2xl bg-zinc-900 border border-zinc-800 text-center">
-            <div className="text-sm text-zinc-400 mb-1">Best Streak</div>
-            <div className="text-3xl font-bold text-yellow-400">{results.bestCombo}</div>
-          </div>
-        </div>
-
-        <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 mb-8">
-          <h3 className="text-lg font-semibold text-center mb-4">How focused did you feel?</h3>
-          <div className="flex justify-center gap-4">
-            {[1, 2, 3].map(rating => (
-              <button
-                key={rating}
-                onClick={() => setFocusRating(rating)}
-                className={`flex flex-col items-center gap-2 px-6 py-4 rounded-xl transition-all ${
-                  focusRating === rating
-                    ? 'bg-emerald-600 text-white scale-105'
-                    : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
-                }`}
-              >
-                <span className="text-2xl">{['🌊', '👍', '🎯'][rating - 1]}</span>
-                <span className="text-sm font-medium">{focusLabels[rating - 1]}</span>
-              </button>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 mb-7">
+            {[
+              { label: 'WPM', val: results.wpm },
+              { label: 'Accuracy', val: `${results.accuracy}%` },
+              { label: 'Raw', val: `${results.rawAccuracy}%` },
+              { label: 'Best streak', val: results.bestCombo },
+            ].map(s => (
+              <div key={s.label} className="bg-[#f6f3f1] border border-[#e5e2df] rounded-lg p-4 text-center">
+                <div className="font-serif text-[0.65rem] text-[#7b7771] uppercase tracking-[0.08em] mb-1.5">{s.label}</div>
+                <div className="font-serif text-[1.6rem] font-bold text-[#665f51] leading-none">{s.val}</div>
+              </div>
             ))}
           </div>
-        </div>
 
-        <div className="flex justify-center">
-          <Button
-            onClick={onComplete}
-            className="bg-emerald-600 hover:bg-emerald-700 text-white px-8"
-          >
-            Back to Dashboard
-          </Button>
+          <div className="bg-[#f6f3f1] border border-[#e5e2df] rounded-lg py-4 px-5 mb-6">
+            <div className="font-serif text-[0.78rem] font-semibold text-[#2a2620] mb-3">How focused did you feel?</div>
+            <div className="flex gap-2">
+              {focusLabels.map((label, i) => (
+                <button
+                  key={label}
+                  onClick={() => setFocusRating(i)}
+                  className="font-serif text-[0.82rem] flex-1 py-2.5 cursor-pointer transition-all border rounded-md"
+                  style={{
+                    background: focusRating === i ? '#665f51' : '#fcf9f6',
+                    color: focusRating === i ? '#fff' : '#665f51',
+                    borderColor: focusRating === i ? '#665f51' : '#dcd9d7',
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex gap-2.5">
+            <button
+              onClick={() => { setResults(null); setFocusRating(null); restartLesson(); }}
+              className="font-serif text-[0.9rem] font-semibold flex-1 py-2.5 bg-[#665f51] hover:bg-[#3d3830] text-white border-none rounded-md cursor-pointer transition-colors"
+            >
+              Practice again
+            </button>
+            <button
+              onClick={onComplete}
+              className="font-serif text-[0.9rem] flex-1 py-2.5 bg-[#f1edea] hover:bg-[#e5e2df] text-[#665f51] border border-[#dcd9d7] rounded-md cursor-pointer transition-colors"
+            >
+              Back to dashboard
+            </button>
+          </div>
         </div>
       </div>
     );
   }
 
+  // ── Mobile fallback ────────────────────────────────────────────
   if (isMobile) {
     return (
       <div className="flex flex-col items-center justify-center py-32 space-y-6 text-center px-6">
-        <Keyboard className="h-12 w-12 text-zinc-500" />
-        <h2 className="text-2xl font-bold">Physical Keyboard Required</h2>
-        <p className="text-zinc-400 max-w-md">
+        <h2 className="font-serif text-2xl font-bold text-[#2a2620]">Physical keyboard required</h2>
+        <p className="font-serif text-[#7b7771] max-w-md leading-relaxed">
           Typing tests work best with a physical keyboard. Please switch to a desktop or laptop computer for the best experience.
         </p>
-        <Button variant="outline" onClick={onCancel} className="text-zinc-400">
-          Back to Dashboard
-        </Button>
+        <button
+          onClick={onCancel}
+          className="font-serif text-[0.9rem] text-[#665f51] bg-[#f1edea] border border-[#dcd9d7] rounded-md px-5 py-2 cursor-pointer hover:bg-[#e5e2df] transition-colors"
+        >
+          Back to dashboard
+        </button>
       </div>
     );
   }
 
+  // ── Loading ────────────────────────────────────────────────────
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center py-32 space-y-6">
-        <Loader2 className="h-12 w-12 animate-spin text-emerald-500" />
-        <p className="text-xl text-zinc-400 animate-pulse">Generating your personalized lesson...</p>
+        <div className="h-10 w-10 rounded-full border-2 border-[#665f51] border-t-transparent animate-spin" />
+        <p className="font-serif text-lg text-[#665f51]">Generating your personalized lesson...</p>
       </div>
     );
   }
 
+  // ── Active session ─────────────────────────────────────────────
+  const progress = Math.round((input.length / text.length) * 100) || 0;
+  const uncorrectedCount = input.split('').filter((ch, i) => i < text.length && ch !== text[i]).length;
+  const elapsedSeconds = startTime ? (Date.now() - startTime - pausedTime) / 1000 : 0;
+  const currentWpm = elapsedSeconds > 1 && input.length > 0
+    ? Math.round((countCorrectChars(text, input) / 5) / (elapsedSeconds / 60))
+    : 0;
+  const currentAccuracy = input.length > 0
+    ? Math.round(((input.length - totalErrors) / Math.max(input.length, 1)) * 100)
+    : 100;
+
   return (
-    <div className={`max-w-4xl mx-auto py-12 ${calmMode ? '' : 'animate-in fade-in zoom-in-95 duration-300'}`}>
-      <div className="flex items-center justify-between mb-8">
-        <div className="flex items-center gap-3">
-          <h2 className="text-2xl font-bold tracking-tight">AI Typing Lesson</h2>
-          <div className="flex gap-1.5">
-            {Array.from({ length: totalChunks }, (_, i) => (
-              <div key={i} className={`w-2 h-2 rounded-full ${i < currentChunk ? 'bg-emerald-500' : i === currentChunk - 1 ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-700'}`} />
-            ))}
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={restartLesson} disabled={saving || paused} className="text-zinc-400">
-            <RotateCcw className="h-4 w-4 mr-2" />
-            Restart
-          </Button>
-          <Button variant="outline" size="sm" onClick={generateLesson} disabled={saving || paused} className="text-zinc-400">
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Skip
-          </Button>
-          {startTime && !endTime && (
-            <Button variant="outline" size="sm" onClick={togglePause} disabled={saving} className="text-zinc-400" title="Esc">
-              {paused ? <Play className="h-4 w-4 mr-2" /> : <Pause className="h-4 w-4 mr-2" />}
-              {paused ? 'Resume' : 'Pause'}
-            </Button>
-          )}
-          <Button variant="ghost" size="sm" onClick={onCancel} disabled={saving} className="text-zinc-400 hover:text-white">
-            <X className="h-4 w-4 mr-2" />
-            Cancel
-          </Button>
-        </div>
-      </div>
+    <div className="bg-[#d9d1c0] min-h-[calc(100vh-56px)] pt-9 pb-20">
+      <div className="max-w-[680px] mx-auto px-6">
 
-      <div
-        ref={textContainerRef}
-        role="region"
-        aria-label="Typing test area. Click to focus and start typing."
-        className={`relative p-8 rounded-2xl border font-mono tracking-tight cursor-text ${paused ? 'select-none' : ''} ${calmMode ? 'bg-zinc-950 border-zinc-900 text-xl md:text-2xl leading-loose shadow-none' : 'bg-zinc-900 border-zinc-800 text-2xl md:text-3xl leading-relaxed shadow-xl'}`}
-        onClick={() => inputRef.current?.focus()}
-      >
-        <span className={paused ? 'blur-md transition-all duration-200' : 'transition-all duration-200'}>{renderText()}</span>
-
-        {errorPops.map(pop => (
-          <span
-            key={pop.id}
-            className="absolute pointer-events-none text-red-500 font-bold animate-error-pop"
-            style={{ left: pop.x, top: pop.y, transform: 'translateX(-50%)' }}
+        {/* Header */}
+        <div className="mb-5">
+          <button
+            onClick={onCancel}
+            className="font-serif text-[0.82rem] text-[#7b7771] bg-transparent border-none cursor-pointer p-0 mb-2 block hover:text-[#2a2620] transition-colors"
           >
-            {pop.char}
-          </span>
-        ))}
-
-        <input
-          ref={inputRef}
-          type="text"
-          aria-label="Type the displayed text here"
-          aria-live="off"
-          className="absolute opacity-0 pointer-events-none"
-          value={input}
-          onChange={handleInputChange}
-          disabled={saving || !!endTime || paused}
-          autoFocus
-        />
-
-        {focusNudge && (
-          <div className="absolute top-2 left-1/2 -translate-x-1/2 px-4 py-2 rounded-full bg-emerald-900/80 text-emerald-300 text-sm font-medium backdrop-blur-sm animate-in fade-in zoom-in-95 duration-300">
-            {focusNudge}
-          </div>
-        )}
-
-        {saving && (
-          <div className="absolute inset-0 bg-zinc-950/80 backdrop-blur-sm rounded-2xl flex flex-col items-center justify-center">
-            <Loader2 className="h-8 w-8 animate-spin text-emerald-500 mb-4" />
-            <p className="font-medium text-zinc-300">Saving your progress...</p>
-          </div>
-        )}
-
-        {paused && (
-          <div className="absolute inset-0 bg-zinc-950/80 backdrop-blur-sm rounded-2xl flex flex-col items-center justify-center cursor-pointer" onClick={togglePause}>
-            <Play className="h-12 w-12 text-emerald-500 mb-4" />
-            <p className="font-medium text-zinc-300">Paused</p>
-            <p className="text-sm text-zinc-500 mt-2">Click or press <kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono text-xs">Esc</kbd> to resume</p>
-            <div className="flex gap-4 mt-4 text-xs text-zinc-600">
-              <span><kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono">R</kbd> restart</span>
-              <span><kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono">S</kbd> skip</span>
-              <span><kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono">Q</kbd> cancel</span>
+            ← Dashboard
+          </button>
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <h2 className="font-serif text-[1.6rem] font-bold text-[#2a2620] tracking-[-0.02em]">AI typing lesson</h2>
+            <div className="flex gap-1.5">
+              {Array.from({ length: totalChunks }, (_, i) => (
+                <div
+                  key={i}
+                  className="w-2 h-2 rounded-full"
+                  style={{
+                    background: i < currentChunk - 1 ? '#665f51' : i === currentChunk - 1 ? '#665f51' : '#dcd9d7',
+                  }}
+                />
+              ))}
             </div>
           </div>
-        )}
-      </div>
-
-      <div className="mt-8 flex items-center justify-between text-zinc-400" role="status" aria-live="polite" aria-label="Typing statistics">
-        <div className="flex gap-8">
-          <div>
-            <div className="text-sm uppercase tracking-wider font-semibold mb-1">Progress</div>
-            <div className="text-xl font-mono text-zinc-50" aria-label={`Progress: ${Math.round((input.length / text.length) * 100) || 0} percent`}>{Math.round((input.length / text.length) * 100) || 0}%</div>
+          <div className="flex items-center gap-3 mt-2 flex-wrap">
+            <div className="font-serif text-[0.8rem] text-[#7b7771]">
+              Block {currentChunk} of {totalChunks}
+              {topic && topic !== 'general' && <> · {topic.startsWith('custom:') ? topic.slice(7) || 'custom' : topic}</>}
+            </div>
+            <button
+              onClick={restartLesson}
+              disabled={saving || paused}
+              className="font-serif text-[0.75rem] text-[#665f51] bg-transparent border border-[#c9c5c1] rounded px-2 py-0.5 cursor-pointer hover:bg-[#f1edea] transition-colors disabled:opacity-50"
+            >
+              Restart
+            </button>
+            <button
+              onClick={generateLesson}
+              disabled={saving || paused}
+              className="font-serif text-[0.75rem] text-[#665f51] bg-transparent border border-[#c9c5c1] rounded px-2 py-0.5 cursor-pointer hover:bg-[#f1edea] transition-colors disabled:opacity-50"
+            >
+              Skip
+            </button>
+            {startTime && !endTime && (
+              <button
+                onClick={togglePause}
+                disabled={saving}
+                className="font-serif text-[0.75rem] text-[#665f51] bg-transparent border border-[#c9c5c1] rounded px-2 py-0.5 cursor-pointer hover:bg-[#f1edea] transition-colors disabled:opacity-50"
+                title="Esc"
+              >
+                {paused ? 'Resume' : 'Pause'}
+              </button>
+            )}
           </div>
+        </div>
+
+        {/* Stats bar */}
+        <div className="flex items-center gap-2.5 mb-3.5 flex-wrap">
+          <StatPill label="wpm" value={currentWpm || '—'} muted={currentWpm === 0} />
+          <StatPill label="accuracy" value={`${currentAccuracy}%`} />
+          <StatPill label="errors" value={totalErrors} muted={totalErrors === 0} />
+          <StatPill label="uncorrected" value={uncorrectedCount} muted={uncorrectedCount === 0} />
           {!calmMode && (
-            <div>
-              <div className="text-sm uppercase tracking-wider font-semibold mb-1">Combo</div>
-              <div className={`text-xl font-mono transition-all duration-200 ${comboFlash ? 'text-yellow-400 scale-125' : combo > 0 ? 'text-emerald-400' : 'text-zinc-500'}`}>
-                {combo > 0 ? combo : '-'}
-                {bestCombo > 10 && <span className="text-xs text-zinc-500 ml-1">best {bestCombo}</span>}
+            <StatPill
+              label="combo"
+              value={combo > 0 ? combo : '—'}
+              muted={combo === 0}
+              flash={comboFlash}
+            />
+          )}
+          <div className="flex-1" />
+          <div className="flex items-center gap-2">
+            <div className="w-[110px] h-[5px] bg-[#dcd9d7] rounded-full overflow-hidden">
+              <div
+                className="h-full bg-[#665f51] rounded-full transition-[width] duration-150"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+            <span className="font-mono text-[0.7rem] text-[#7b7771]">{progress}%</span>
+          </div>
+        </div>
+
+        {/* AI nudge / hint */}
+        {focusNudge ? (
+          <div className="font-serif text-[0.85rem] text-[#2a2620] bg-[#fcf9f6] border border-[#e5e2df] border-l-[3px] border-l-[#7a6030] rounded-md py-3 px-4 mb-4 leading-[1.55] shadow-[0_1px_2px_rgba(40,34,24,0.04)]">
+            <span className="font-bold text-[#7a6030] mr-2 text-[0.68rem] tracking-[0.1em] uppercase">Focus</span>
+            {focusNudge}
+          </div>
+        ) : (
+          <div className="font-serif text-[0.85rem] text-[#2a2620] bg-[#fcf9f6] border border-[#e5e2df] border-l-[3px] border-l-[#665f51] rounded-md py-3 px-4 mb-4 leading-[1.55] shadow-[0_1px_2px_rgba(40,34,24,0.04)]">
+            <span className="font-bold text-[#665f51] mr-2 text-[0.68rem] tracking-[0.1em] uppercase">Tip</span>
+            Focus on accuracy over speed — your fingers will catch up.
+          </div>
+        )}
+
+        {/* Text display */}
+        <div
+          ref={textContainerRef}
+          role="region"
+          aria-label="Typing test area. Click to focus and start typing."
+          className={`bg-[#fcf9f6] border border-[#dcd9d7] rounded-lg ${calmMode ? 'shadow-none px-7 py-7' : 'shadow-[0_2px_6px_rgba(40,34,24,0.07)] px-8 py-7'} mb-2.5 relative cursor-text ${paused ? 'select-none' : ''}`}
+          onClick={() => inputRef.current?.focus()}
+        >
+          <div
+            className={`font-mono ${calmMode ? 'text-[1rem] leading-[1.95]' : 'text-[1.05rem] leading-[2.1]'} tracking-[0.02em] break-words ${paused ? 'blur-md' : ''} transition-all duration-200`}
+          >
+            {renderText()}
+          </div>
+
+          {errorPops.map(pop => (
+            <span
+              key={pop.id}
+              className="absolute pointer-events-none font-bold animate-error-pop"
+              style={{ left: pop.x, top: pop.y, transform: 'translateX(-50%)', color: '#7a3f3f' }}
+            >
+              {pop.char}
+            </span>
+          ))}
+
+          <input
+            ref={inputRef}
+            type="text"
+            aria-label="Type the displayed text here"
+            aria-live="off"
+            className="absolute opacity-0 pointer-events-none"
+            value={input}
+            onChange={handleInputChange}
+            disabled={saving || !!endTime || paused}
+            autoFocus
+          />
+
+          {comboFlash && !calmMode && (
+            <div className="absolute top-2 left-1/2 -translate-x-1/2 px-3.5 py-1 rounded-full bg-[#f6f3f1] border border-[#7a6030] text-[#7a6030] text-xs font-semibold shadow-sm">
+              Streak.
+            </div>
+          )}
+
+          {saving && (
+            <div className="absolute inset-0 bg-[#fcf9f6]/90 backdrop-blur-sm rounded-lg flex flex-col items-center justify-center">
+              <div className="h-8 w-8 rounded-full border-2 border-[#665f51] border-t-transparent animate-spin mb-3" />
+              <p className="font-serif font-medium text-[#665f51]">Saving your progress...</p>
+            </div>
+          )}
+
+          {paused && (
+            <div
+              className="absolute inset-0 bg-[#fcf9f6]/93 backdrop-blur-sm rounded-lg flex flex-col items-center justify-center cursor-pointer"
+              onClick={togglePause}
+            >
+              <p className="font-serif text-xl font-semibold text-[#2a2620]">Paused</p>
+              <p className="font-serif text-sm text-[#7b7771] mt-2">
+                Click or press <kbd className="px-1.5 py-0.5 rounded bg-[#f1edea] text-[#665f51] font-mono text-xs border border-[#dcd9d7]">Esc</kbd> to resume
+              </p>
+              <div className="flex gap-4 mt-4 text-xs text-[#7b7771]">
+                <span><kbd className="px-1.5 py-0.5 rounded bg-[#f1edea] text-[#665f51] font-mono border border-[#dcd9d7]">R</kbd> restart</span>
+                <span><kbd className="px-1.5 py-0.5 rounded bg-[#f1edea] text-[#665f51] font-mono border border-[#dcd9d7]">S</kbd> skip</span>
+                <span><kbd className="px-1.5 py-0.5 rounded bg-[#f1edea] text-[#665f51] font-mono border border-[#dcd9d7]">Q</kbd> cancel</span>
               </div>
             </div>
           )}
-          <div>
-            <div className="text-sm uppercase tracking-wider font-semibold mb-1">Errors</div>
-            <div className="text-xl font-mono text-red-400" aria-label={`Total errors: ${totalErrors}`}>{totalErrors}</div>
-          </div>
-          <div>
-            <div className="text-sm uppercase tracking-wider font-semibold mb-1">Uncorrected</div>
-            <div className="text-xl font-mono text-red-400">
-              {input.split('').filter((ch, i) => i < text.length && ch !== text[i]).length}
-            </div>
-          </div>
         </div>
 
-        {comboFlash && !calmMode && (
-          <div className="text-yellow-400 font-bold text-sm animate-bounce">
-            Streak!
-          </div>
-        )}
-        {(!comboFlash || calmMode) && (
-          <div className="text-sm">
-            Focus on accuracy over speed.
-          </div>
-        )}
-      </div>
+        <div className="font-serif text-[0.72rem] text-[#7b7771] text-center mb-4">
+          Click anywhere and begin typing. Backspace to correct errors.
+        </div>
 
-      <div className="mt-3 flex justify-center gap-4 text-xs text-zinc-600">
-        <span><kbd className="px-1 py-0.5 rounded bg-zinc-800 text-zinc-500 font-mono">Tab</kbd> focus</span>
-        <span><kbd className="px-1 py-0.5 rounded bg-zinc-800 text-zinc-500 font-mono">Esc</kbd> pause, then <kbd className="px-1 py-0.5 rounded bg-zinc-800 text-zinc-500 font-mono">R</kbd> <kbd className="px-1 py-0.5 rounded bg-zinc-800 text-zinc-500 font-mono">S</kbd> <kbd className="px-1 py-0.5 rounded bg-zinc-800 text-zinc-500 font-mono">Q</kbd></span>
+        {/* Home row reference */}
+        <div className="flex gap-1.5 justify-center flex-wrap mb-2">
+          {['A','S','D','F','G','H','J','K','L',';'].map(k => (
+            <span
+              key={k}
+              className="inline-flex items-center justify-center font-mono text-[0.72rem] bg-[#fcf9f6] text-[#665f51] rounded-[5px] min-w-[30px] h-[30px] px-1.5 border border-[#c9c5c1]"
+              style={{ borderBottom: '3px solid #b5b0aa' }}
+            >
+              {k}
+            </span>
+          ))}
+        </div>
+
+        {/* Keyboard shortcuts hint */}
+        <div className="flex justify-center gap-4 text-[0.7rem] text-[#7b7771] mt-4">
+          <span><kbd className="px-1 py-0.5 rounded bg-[#f1edea] text-[#665f51] font-mono border border-[#dcd9d7]">Tab</kbd> focus</span>
+          <span>
+            <kbd className="px-1 py-0.5 rounded bg-[#f1edea] text-[#665f51] font-mono border border-[#dcd9d7]">Esc</kbd> pause
+          </span>
+        </div>
       </div>
+    </div>
+  );
+}
+
+function StatPill({
+  label,
+  value,
+  muted,
+  flash,
+}: {
+  label: string;
+  value: string | number;
+  muted?: boolean;
+  flash?: boolean;
+}) {
+  return (
+    <div
+      className="flex flex-col items-center bg-[#fcf9f6] border rounded-md py-2 px-4 min-w-[60px] shadow-[0_1px_2px_rgba(40,34,24,0.05)] transition-all"
+      style={{
+        borderColor: flash ? '#7a6030' : '#e5e2df',
+        background: flash ? '#f6f3f1' : '#fcf9f6',
+      }}
+    >
+      <span
+        className="font-serif text-[1.15rem] font-bold leading-none"
+        style={{ color: flash ? '#7a6030' : muted ? '#c9c5c1' : '#665f51' }}
+      >
+        {value}
+      </span>
+      <span className="font-serif text-[0.63rem] text-[#7b7771] mt-1 tracking-[0.05em]">{label}</span>
     </div>
   );
 }
