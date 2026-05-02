@@ -36,6 +36,22 @@ const CHUNK_VARIETY = [
   'Use a narrative or storytelling angle.',
   'Use a factual or informational angle.',
   'Use a descriptive or observational angle.',
+  'Use a reflective or first-person angle.',
+  'Use a dialogue-driven angle with quoted speech.',
+  'Use a how-to or instructional angle.',
+  'Use a comparative angle, contrasting two ideas.',
+  'Use a historical or timeline angle.',
+];
+
+const FRESH_HINTS = [
+  'Open with an unexpected concrete noun.',
+  'Anchor the text in a specific season or time of day.',
+  'Include at least one place name.',
+  'Include at least one number written as a numeral.',
+  'Use an unusual but real verb in the first sentence.',
+  'Mention a small, tangible object.',
+  'Reference a sound or smell.',
+  'Begin with a question or surprising statement.',
 ];
 
 function buildPrompt(data: GenerateRequest): string {
@@ -89,7 +105,7 @@ function buildPrompt(data: GenerateRequest): string {
       prompt += ` Include variable/function names that use these letters the user struggles with: ${sortedKeys.join(', ')}.`;
     }
   } else {
-    const variety = CHUNK_VARIETY[chunkIndex % CHUNK_VARIETY.length];
+    const variety = CHUNK_VARIETY[Math.floor(Math.random() * CHUNK_VARIETY.length)];
     prompt = `Generate a single paragraph of plain prose (around ${wordCount} words) for a typing test. ${difficulty} ${variety}`;
 
     // Topic guidance
@@ -116,6 +132,7 @@ function buildPrompt(data: GenerateRequest): string {
     prompt += ` The user often ${bigramDescriptions.join(', and ')}. Include words that help practice the correct keys.`;
   }
 
+  prompt += ' ' + FRESH_HINTS[Math.floor(Math.random() * FRESH_HINTS.length)];
   prompt += ' Do not repeat any word more than 3 times in the entire text. Output ONLY the text. No quotes, no markdown, no labels, no bullet points.';
 
   return prompt;
@@ -135,7 +152,10 @@ export async function POST(request: NextRequest) {
     const response = await ai.models.generateContent({
       model: 'gemini-3.1-flash-lite-preview',
       contents: prompt,
-      config: { temperature: 1.2 },
+      config: {
+        temperature: 1.2,
+        seed: Math.floor(Math.random() * 2_147_483_647),
+      },
     });
 
     const text = response.text?.trim().replace(/\n/g, ' ').replace(/\s+/g, ' ') || null;

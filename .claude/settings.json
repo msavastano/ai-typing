@@ -1,7 +1,4 @@
 {
-  "enabledPlugins": {
-    "developer-tools@awesome-claude-skills": true
-  },
   "hooks": {
     "PostToolUse": [
       {
@@ -52,5 +49,9 @@
         ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "developer-tools@awesome-claude-skills": true,
+    "caveman@caveman": true
   }
 }
