@@ -1,8 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import { NextRequest, NextResponse } from 'next/server';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
 // Simple in-memory rate limiter: max 10 requests per minute per IP
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 10;
@@ -144,10 +142,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Too many requests. Please wait before generating another lesson.' }, { status: 429 });
   }
 
+  const apiKey = request.headers.get('x-gemini-api-key')?.trim();
+  if (!apiKey) {
+    return NextResponse.json({ error: 'Missing Gemini API key. Add your key in the dashboard to generate lessons.' }, { status: 401 });
+  }
+
   try {
     const body: GenerateRequest = await request.json();
 
     const prompt = buildPrompt(body);
+
+    const ai = new GoogleGenAI({ apiKey });
 
     const response = await ai.models.generateContent({
       model: 'gemini-3.1-flash-lite-preview',
@@ -167,6 +172,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ text });
   } catch (error) {
     console.error('Generate lesson error:', error);
+    const message = error instanceof Error ? error.message : '';
+    // Surface key problems clearly so the user can fix their key
+    if (/api[_ ]?key|permission|unauthenticated|invalid|403|401|400/i.test(message)) {
+      return NextResponse.json({ error: 'Gemini rejected your API key. Check that it is valid and try again.' }, { status: 401 });
+    }
     return NextResponse.json({ error: 'Failed to generate lesson' }, { status: 500 });
   }
 }
