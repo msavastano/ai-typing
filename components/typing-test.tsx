@@ -14,6 +14,7 @@ import {
   mergeWithDecay,
 } from '@/lib/typing-metrics';
 import { playCorrectSound, playErrorSound, playStreakSound } from '@/lib/audio';
+import { getGeminiKey } from '@/lib/gemini-key';
 
 const FALLBACK_TEXTS = [
   "The quick brown fox jumps over the lazy dog near the old stone bridge. Every morning, sunlight filters through the tall oak trees and warms the quiet meadow below.",
@@ -64,6 +65,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
   const isMobile = useIsMobile();
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(true);
+  const [keyError, setKeyError] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [startTime, setStartTime] = useState<number | null>(null);
   const [endTime, setEndTime] = useState<number | null>(null);
@@ -104,10 +106,14 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
 
   const generateLesson = useCallback(async () => {
     setLoading(true);
+    setKeyError(null);
     try {
       const response = await fetch('/api/generate-lesson', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-gemini-api-key': getGeminiKey() ?? '',
+        },
         body: JSON.stringify({
           weakKeys,
           bigrams,
@@ -120,6 +126,13 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
           focusKeys,
         }),
       });
+
+      if (response.status === 401) {
+        const data = await response.json().catch(() => ({}));
+        setKeyError(data.error || 'Your Gemini API key is missing or invalid.');
+        setLoading(false);
+        return;
+      }
 
       if (!response.ok) throw new Error('API request failed');
 
@@ -303,7 +316,10 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
       try {
         const response = await fetch('/api/generate-lesson', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'x-gemini-api-key': getGeminiKey() ?? '',
+          },
           body: JSON.stringify({ weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons, topic, chunkIndex: currentChunk, totalChunks: totalChunks, focusKeys }),
         });
         if (!response.ok) throw new Error('API request failed');
@@ -556,6 +572,22 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
           className="font-serif text-[0.9rem] text-[#665f51] bg-[#f1edea] border border-[#dcd9d7] rounded-md px-5 py-2 cursor-pointer hover:bg-[#e5e2df] transition-colors"
         >
           Back to dashboard
+        </button>
+      </div>
+    );
+  }
+
+  // ── API key error ──────────────────────────────────────────────
+  if (keyError) {
+    return (
+      <div className="flex flex-col items-center justify-center py-32 space-y-6 text-center px-6">
+        <h2 className="font-serif text-2xl font-bold text-[#2a2620]">Gemini API key needed</h2>
+        <p className="font-serif text-[#7b7771] max-w-md leading-relaxed">{keyError}</p>
+        <button
+          onClick={onCancel}
+          className="font-serif text-[0.9rem] text-white bg-[#665f51] hover:bg-[#3d3830] border-none rounded-md px-5 py-2 cursor-pointer transition-colors"
+        >
+          Back to dashboard to add your key
         </button>
       </div>
     );
