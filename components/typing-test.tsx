@@ -8,13 +8,25 @@ import { collection, addDoc, doc, runTransaction, serverTimestamp } from 'fireba
 import {
   countCorrectChars,
   calculateWpm,
-  countUncorrectedErrors,
   calculateAccuracy,
   updateRunningAverage,
   mergeWithDecay,
+  addCounts,
 } from '@/lib/typing-metrics';
 import { playCorrectSound, playErrorSound, playStreakSound } from '@/lib/audio';
 import { getGeminiKey } from '@/lib/gemini-key';
+import { pickFallback } from '@/lib/lesson-variety';
+import {
+  coerceKeyStats,
+  coerceDigraphStats,
+  mergeKeyStats,
+  mergeDigraphStats,
+  newKeystrokeSession,
+  recordKeystroke,
+  type StruggleKey,
+  type KeyStats,
+  type DigraphStats,
+} from '@/lib/skill-model';
 
 const FALLBACK_TEXTS = [
   "The quick brown fox jumps over the lazy dog near the old stone bridge. Every morning, sunlight filters through the tall oak trees and warms the quiet meadow below.",
@@ -56,21 +68,36 @@ interface TypingTestProps {
   calmMode: boolean;
   totalChunks: number;
   focusKeys: string[];
+  recentTexts: string[];
+  /** Skill-model ranking of what to practise; empty until enough data exists. */
+  struggleKeys: StruggleKey[];
+  /** Keys with a long clean record, eligible for spaced review. */
+  masteredKeys: string[];
+  slowDigraphs: string[];
+  /** Trailing-window skill level, which tracks improvement unlike a lifetime mean. */
+  recentWpm: number | null;
+  recentAccuracy: number | null;
   onComplete: () => void;
   onCancel: () => void;
 }
 
-export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons, topic, strictMode, audioEnabled, calmMode, totalChunks, focusKeys, onComplete, onCancel }: TypingTestProps) {
+export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons, topic, strictMode, audioEnabled, calmMode, totalChunks, focusKeys, recentTexts, struggleKeys, masteredKeys, slowDigraphs, recentWpm, recentAccuracy, onComplete, onCancel }: TypingTestProps) {
   const { user } = useAuth();
   const isMobile = useIsMobile();
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(true);
   const [keyError, setKeyError] = useState<string | null>(null);
+  const [usedFallback, setUsedFallback] = useState(false);
+  // What the planner chose to work on, shown so the lesson explains itself.
+  const [lessonFocus, setLessonFocus] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [startTime, setStartTime] = useState<number | null>(null);
   const [endTime, setEndTime] = useState<number | null>(null);
-  const [mistakes, setMistakes] = useState<Record<string, number>>({});
-  const [sessionBigrams, setSessionBigrams] = useState<Record<string, number>>({});
+  // Refs, not state: these are never rendered, and holding them in state made
+  // them one keystroke stale at the moment a block completes — mistyping the
+  // final character dropped that error from the saved totals.
+  const blockMistakes = useRef<Record<string, number>>({});
+  const blockBigrams = useRef<Record<string, number>>({});
   const [totalErrors, setTotalErrors] = useState(0);
   const [saving, setSaving] = useState(false);
   const [errorPops, setErrorPops] = useState<{ id: number; char: string; x: number; y: number }[]>([]);
@@ -85,6 +112,25 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
   const [currentChunk, setCurrentChunk] = useState(1);
   const [chunkTransition, setChunkTransition] = useState(false);
   const chunkStats = useRef({ totalCorrect: 0, totalChars: 0, totalErrors: 0, totalDuration: 0 });
+  // Text of every block completed this session — saved to Firestore so future
+  // sessions can be steered away from it, and reused within the session too.
+  const blockTexts = useRef<string[]>([]);
+  // Bumped on every generation request so Skip / Practice again rotate the prompt
+  // framing even though totalLessons has not changed.
+  const varietyNonce = useRef(0);
+  // Per-character attempts/errors/latency for the block in progress, case-sensitive
+  // so shift problems stay visible.
+  const keystrokes = useRef(newKeystrokeSession());
+
+  // Totals from blocks the user has actually finished. Kept apart from the block
+  // in progress so that restarting or skipping a block cannot throw away the
+  // measurements from blocks already completed in this session.
+  const committed = useRef({
+    mistakes: {} as Record<string, number>,
+    bigrams: {} as Record<string, number>,
+    keys: {} as KeyStats,
+    digraphs: {} as DigraphStats,
+  });
 
   const inputRef = useRef<HTMLInputElement>(null);
   const hasGenerated = useRef(false);
@@ -104,9 +150,45 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
+  // Everything the user has typed lately: earlier blocks of this session first,
+  // then previous sessions. Keeps blocks distinct from each other as well.
+  const avoidTexts = useCallback(
+    () => [...blockTexts.current, ...recentTexts],
+    [recentTexts],
+  );
+
+  /**
+   * Clear the block in progress. Session totals — completed blocks, their stats
+   * and their keystrokes — are deliberately untouched.
+   */
+  const resetBlock = useCallback(() => {
+    setInput('');
+    setStartTime(null);
+    setEndTime(null);
+    blockMistakes.current = {};
+    blockBigrams.current = {};
+    setTotalErrors(0);
+    setPaused(false);
+    setPausedTime(0);
+    setCombo(0);
+    setBestCombo(0);
+    setComboFlash(false);
+    setFocusNudge(null);
+    keystrokes.current = newKeystrokeSession();
+    nextComboThreshold.current = generateComboThreshold();
+    lastKeystrokeTime.current = 0;
+    recentIntervals.current = [];
+    lastNudgeTime.current = 0;
+  }, []);
+
   const generateLesson = useCallback(async () => {
     setLoading(true);
     setKeyError(null);
+    setUsedFallback(false);
+    varietyNonce.current += 1;
+    // Reset up front so the fallback path clears the block too — otherwise a
+    // failed Skip would leave the previous input against the new text.
+    resetBlock();
     try {
       const response = await fetch('/api/generate-lesson', {
         method: 'POST',
@@ -121,9 +203,18 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
           avgAccuracy,
           totalLessons,
           topic,
-          chunkIndex: 0,
+          // The block being (re)loaded, which is not always the first: Skip
+          // reloads whichever block the user is currently on.
+          chunkIndex: currentChunk - 1,
           totalChunks: totalChunks,
           focusKeys,
+          recentTexts: avoidTexts(),
+          varietyNonce: varietyNonce.current,
+          struggleKeys,
+          masteredKeys,
+          slowDigraphs,
+          recentWpm,
+          recentAccuracy,
         }),
       });
 
@@ -138,31 +229,18 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
 
       const data = await response.json();
       setText(data.text);
-      setInput('');
-      setStartTime(null);
-      setEndTime(null);
-      setMistakes({});
-      setSessionBigrams({});
-      setTotalErrors(0);
-      setPaused(false);
-      setPausedTime(0);
-      setCombo(0);
-      setBestCombo(0);
-      setComboFlash(false);
-      setFocusNudge(null);
-      nextComboThreshold.current = generateComboThreshold();
-      lastKeystrokeTime.current = 0;
-      recentIntervals.current = [];
-      lastNudgeTime.current = 0;
+      setLessonFocus(typeof data.focus === 'string' ? data.focus : null);
 
       setTimeout(() => inputRef.current?.focus(), 100);
     } catch (error) {
       console.error("Failed to generate lesson:", error);
-      setText(FALLBACK_TEXTS[Math.floor(Math.random() * FALLBACK_TEXTS.length)]);
+      setText(pickFallback(FALLBACK_TEXTS, avoidTexts()));
+      setLessonFocus(null);
+      setUsedFallback(true);
     } finally {
       setLoading(false);
     }
-  }, [weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons, topic, totalChunks, focusKeys]);
+  }, [weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons, topic, totalChunks, focusKeys, avoidTexts, struggleKeys, masteredKeys, slowDigraphs, recentWpm, recentAccuracy, currentChunk, resetBlock]);
 
   useEffect(() => {
     if (!hasGenerated.current) {
@@ -171,27 +249,37 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
     }
   }, [generateLesson]);
 
+  /**
+   * Retype the same text from the top. Which block you are on and everything
+   * already completed this session are preserved.
+   */
   const restartLesson = () => {
-    setInput('');
-    setStartTime(null);
-    setEndTime(null);
-    setMistakes({});
-    setSessionBigrams({});
-    setTotalErrors(0);
-    setPaused(false);
-    setPausedTime(0);
-    setCombo(0);
-    setBestCombo(0);
-    setComboFlash(false);
-    setFocusNudge(null);
-    setCurrentChunk(1);
-    setChunkTransition(false);
-    chunkStats.current = { totalCorrect: 0, totalChars: 0, totalErrors: 0, totalDuration: 0 };
-    nextComboThreshold.current = generateComboThreshold();
-    lastKeystrokeTime.current = 0;
-    recentIntervals.current = [];
-    lastNudgeTime.current = 0;
+    resetBlock();
     setTimeout(() => inputRef.current?.focus(), 50);
+  };
+
+  /**
+   * Fold the finished block into the session totals. Called once per block, at
+   * the moment it is completed — never on restart or skip, so abandoned attempts
+   * do not pollute the profile.
+   */
+  const commitBlock = () => {
+    const totals = committed.current;
+    totals.mistakes = addCounts(totals.mistakes, blockMistakes.current);
+    totals.bigrams = addCounts(totals.bigrams, blockBigrams.current);
+    totals.keys = mergeKeyStats(totals.keys, keystrokes.current.keys, 0);
+    totals.digraphs = mergeDigraphStats(totals.digraphs, keystrokes.current.digraphs, 0);
+  };
+
+  /** Start a whole new session with freshly generated text. */
+  const startNewSession = () => {
+    setResults(null);
+    setFocusRating(null);
+    setCurrentChunk(1);
+    chunkStats.current = { totalCorrect: 0, totalChars: 0, totalErrors: 0, totalDuration: 0 };
+    blockTexts.current = [];
+    committed.current = { mistakes: {}, bigrams: {}, keys: {}, digraphs: {} };
+    generateLesson();
   };
 
   const togglePause = () => {
@@ -208,13 +296,15 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     const now = Date.now();
+    const isForward = val.length > input.length;
+    const latency = isForward && lastKeystrokeTime.current > 0 ? now - lastKeystrokeTime.current : null;
 
     if (!startTime && val.length > 0) {
       setStartTime(now);
     }
 
-    if (val.length > input.length && lastKeystrokeTime.current > 0) {
-      const interval = now - lastKeystrokeTime.current;
+    if (latency !== null) {
+      const interval = latency;
       if (interval < 5000) {
         recentIntervals.current.push(interval);
         if (recentIntervals.current.length > FOCUS_WINDOW) {
@@ -235,10 +325,12 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
     }
     lastKeystrokeTime.current = now;
 
-    if (val.length > input.length) {
+    if (isForward) {
       const newCharIndex = val.length - 1;
       const expectedChar = text[newCharIndex];
       const typedChar = val[newCharIndex];
+
+      recordKeystroke(keystrokes.current, expectedChar, typedChar, latency);
 
       if (expectedChar && typedChar === expectedChar) {
         if (audioEnabled) playCorrectSound();
@@ -259,15 +351,10 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
         setCombo(0);
         if (audioEnabled) playErrorSound();
         setTotalErrors(prev => prev + 1);
-        setMistakes(prev => ({
-          ...prev,
-          [expectedChar.toLowerCase()]: (prev[expectedChar.toLowerCase()] || 0) + 1
-        }));
-        const bigramKey = `${expectedChar.toLowerCase()}→${typedChar.toLowerCase()}`;
-        setSessionBigrams(prev => ({
-          ...prev,
-          [bigramKey]: (prev[bigramKey] || 0) + 1
-        }));
+        const missedKey = expectedChar.toLowerCase();
+        blockMistakes.current[missedKey] = (blockMistakes.current[missedKey] || 0) + 1;
+        const bigramKey = `${missedKey}→${typedChar.toLowerCase()}`;
+        blockBigrams.current[bigramKey] = (blockBigrams.current[bigramKey] || 0) + 1;
 
         const charEl = charRefs.current[newCharIndex];
         const containerEl = textContainerRef.current;
@@ -302,17 +389,11 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
     setChunkTransition(true);
     setTimeout(async () => {
       setCurrentChunk(prev => prev + 1);
-      setInput('');
-      setStartTime(null);
-      setEndTime(null);
-      setTotalErrors(0);
-      setPaused(false);
-      setPausedTime(0);
-      setCombo(0);
-      setComboFlash(false);
-      setFocusNudge(null);
-      lastKeystrokeTime.current = 0;
-      recentIntervals.current = [];
+      setUsedFallback(false);
+      varietyNonce.current += 1;
+      // The finished block was committed in finishTest, so clearing here starts
+      // the next block from zero without losing anything.
+      resetBlock();
       try {
         const response = await fetch('/api/generate-lesson', {
           method: 'POST',
@@ -320,13 +401,40 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
             'Content-Type': 'application/json',
             'x-gemini-api-key': getGeminiKey() ?? '',
           },
-          body: JSON.stringify({ weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons, topic, chunkIndex: currentChunk, totalChunks: totalChunks, focusKeys }),
+          body: JSON.stringify({
+            weakKeys,
+            bigrams,
+            avgWpm,
+            avgAccuracy,
+            totalLessons,
+            topic,
+            chunkIndex: currentChunk,
+            totalChunks: totalChunks,
+            focusKeys,
+            recentTexts: avoidTexts(),
+            varietyNonce: varietyNonce.current,
+            struggleKeys,
+            masteredKeys,
+            slowDigraphs,
+            recentWpm,
+            recentAccuracy,
+          }),
         });
+        if (response.status === 401) {
+          const data = await response.json().catch(() => ({}));
+          setKeyError(data.error || 'Your Gemini API key is missing or invalid.');
+          setChunkTransition(false);
+          return;
+        }
         if (!response.ok) throw new Error('API request failed');
         const data = await response.json();
         setText(data.text);
-      } catch {
-        setText(FALLBACK_TEXTS[Math.floor(Math.random() * FALLBACK_TEXTS.length)]);
+        setLessonFocus(typeof data.focus === 'string' ? data.focus : null);
+      } catch (error) {
+        console.error('Failed to generate next block:', error);
+        setText(pickFallback(FALLBACK_TEXTS, avoidTexts()));
+        setLessonFocus(null);
+        setUsedFallback(true);
       }
       setChunkTransition(false);
       setTimeout(() => inputRef.current?.focus(), 100);
@@ -338,12 +446,13 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
 
     const durationSeconds = (Date.now() - startTime - pausedTime) / 1000;
     const correctChars = countCorrectChars(text, finalInput);
-    const uncorrectedErrors = countUncorrectedErrors(text, finalInput);
 
     chunkStats.current.totalCorrect += correctChars;
     chunkStats.current.totalChars += text.length;
     chunkStats.current.totalErrors += totalErrors;
     chunkStats.current.totalDuration += durationSeconds;
+    blockTexts.current.push(text);
+    commitBlock();
 
     if (currentChunk < totalChunks) {
       advanceChunk();
@@ -357,17 +466,26 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
     const finalUncorrected = stats.totalChars - stats.totalCorrect;
     const accuracy = calculateAccuracy(stats.totalChars, finalUncorrected);
 
+    // Persist the actual text so later sessions can be steered away from it.
+    // Firestore rules cap `text` at 10k chars, so keep headroom.
+    const blocks = blockTexts.current.filter(Boolean);
+    const sessionText = blocks.join(' ').slice(0, 9000) || `[${totalChunks}-chunk session]`;
+
+    // Every block completed this session, including the one just finished.
+    const session = committed.current;
+
     try {
       await addDoc(collection(db, `users/${user.uid}/lessons`), {
         uid: user.uid,
         createdAt: serverTimestamp(),
-        text: `[${totalChunks}-chunk session]`,
+        text: sessionText,
+        blocks,
         wpm,
         accuracy,
         rawAccuracy,
         duration: Math.round(stats.totalDuration),
-        mistakes,
-        bigrams: sessionBigrams,
+        mistakes: session.mistakes,
+        bigrams: session.bigrams,
       });
 
       const userRef = doc(db, 'users', user.uid);
@@ -382,12 +500,28 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
         const currentWeakKeys: Record<string, number> = (typeof userData.weakKeys === 'object' && userData.weakKeys) || {};
         const currentBigrams: Record<string, number> = (typeof userData.bigrams === 'object' && userData.bigrams) || {};
 
-        const newWeakKeys = mergeWithDecay(currentWeakKeys, mistakes);
-        const newBigrams = mergeWithDecay(currentBigrams, sessionBigrams);
+        const newWeakKeys = mergeWithDecay(currentWeakKeys, session.mistakes);
+        const newBigrams = mergeWithDecay(currentBigrams, session.bigrams);
 
         const newTotalLessons = currentTotalLessons + 1;
         const newAvgWpm = updateRunningAverage(currentAvgWpm, currentTotalLessons, wpm);
         const newAvgAccuracy = updateRunningAverage(currentAvgAccuracy, currentTotalLessons, accuracy);
+
+        // Skill-model stats age on a time half-life, so a gap between sessions
+        // lowers the weight of old evidence without distorting its rates.
+        const savedAt = Date.now();
+        const lastUpdate = typeof userData.statsUpdatedAt === 'number' ? userData.statsUpdatedAt : savedAt;
+        const elapsedMs = Math.max(0, savedAt - lastUpdate);
+        const newKeyStats = mergeKeyStats(
+          coerceKeyStats(userData.keyStats),
+          session.keys,
+          elapsedMs,
+        );
+        const newDigraphStats = mergeDigraphStats(
+          coerceDigraphStats(userData.digraphStats),
+          session.digraphs,
+          elapsedMs,
+        );
 
         transaction.update(userRef, {
           totalLessons: newTotalLessons,
@@ -395,6 +529,9 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
           avgAccuracy: newAvgAccuracy,
           weakKeys: newWeakKeys,
           bigrams: newBigrams,
+          keyStats: newKeyStats,
+          digraphStats: newDigraphStats,
+          statsUpdatedAt: savedAt,
         });
       });
 
@@ -542,7 +679,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
 
           <div className="flex gap-2.5">
             <button
-              onClick={() => { setResults(null); setFocusRating(null); restartLesson(); }}
+              onClick={startNewSession}
               className="font-serif text-[0.9rem] font-semibold flex-1 py-2.5 bg-[#665f51] hover:bg-[#3d3830] text-white border-none rounded-md cursor-pointer transition-colors"
             >
               Practice again
@@ -698,6 +835,14 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
           </div>
         </div>
 
+        {/* Offline fallback notice */}
+        {usedFallback && (
+          <div className="font-serif text-[0.85rem] text-[#2a2620] bg-[#fcf9f6] border border-[#e5e2df] border-l-[3px] border-l-[#7a3f3f] rounded-md py-3 px-4 mb-4 leading-[1.55] shadow-[0_1px_2px_rgba(40,34,24,0.04)]">
+            <span className="font-bold text-[#7a3f3f] mr-2 text-[0.68rem] tracking-[0.1em] uppercase">Offline text</span>
+            Couldn&apos;t reach the AI, so this block uses a stored practice text. Your results still count.
+          </div>
+        )}
+
         {/* AI nudge / hint */}
         {focusNudge ? (
           <div className="font-serif text-[0.85rem] text-[#2a2620] bg-[#fcf9f6] border border-[#e5e2df] border-l-[3px] border-l-[#7a6030] rounded-md py-3 px-4 mb-4 leading-[1.55] shadow-[0_1px_2px_rgba(40,34,24,0.04)]">
@@ -706,8 +851,10 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
           </div>
         ) : (
           <div className="font-serif text-[0.85rem] text-[#2a2620] bg-[#fcf9f6] border border-[#e5e2df] border-l-[3px] border-l-[#665f51] rounded-md py-3 px-4 mb-4 leading-[1.55] shadow-[0_1px_2px_rgba(40,34,24,0.04)]">
-            <span className="font-bold text-[#665f51] mr-2 text-[0.68rem] tracking-[0.1em] uppercase">Tip</span>
-            Focus on accuracy over speed — your fingers will catch up.
+            <span className="font-bold text-[#665f51] mr-2 text-[0.68rem] tracking-[0.1em] uppercase">
+              {lessonFocus ? 'Focus' : 'Tip'}
+            </span>
+            {lessonFocus ?? 'Focus on accuracy over speed — your fingers will catch up.'}
           </div>
         )}
 

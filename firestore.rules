@@ -13,15 +13,24 @@
 //   - totalLessons: number (required) - Total number of lessons completed
 //   - avgWpm: number (required) - Average words per minute
 //   - avgAccuracy: number (required) - Average typing accuracy
-//   - weakKeys: map (required) - Map of characters to error counts
+//   - weakKeys: map (required) - Map of characters to error counts (legacy ranking)
 //   - bigrams: map (required) - Map of key confusion pairs to error counts
+//   - keyStats: map (optional) - Skill model. Character (case-sensitive) to
+//     { attempts, errors, latencyN, latencySum, latencySumSq }. Ranking by error
+//     *rate* and latency needs the attempt denominator that weakKeys lacks.
+//   - digraphStats: map (optional) - Letter pair to { n, sumMs }, capped at 300
+//     entries by MAX_DIGRAPHS so the document cannot grow without bound.
+//   - statsUpdatedAt: number (optional) - Epoch ms of the last keyStats write.
+//     Drives the time-based half-life decay applied on the next merge.
 //
 // Collection: users/{userId}/lessons
 // Document ID: {lessonId}
 // Fields:
 //   - uid: string (required, immutable) - The user's unique ID who completed the lesson
 //   - createdAt: timestamp (required, immutable) - When the lesson was completed
-//   - text: string (required, immutable) - The text that was typed
+//   - text: string (required, immutable) - The full text that was typed (all blocks joined)
+//   - blocks: list (optional, immutable) - Per-block texts; used to keep future
+//     lessons from repeating. Absent on lessons saved before this was tracked.
 //   - wpm: number (required, immutable) - Words per minute achieved
 //   - accuracy: number (required, immutable) - Accuracy achieved (0-100)
 //   - duration: number (required, immutable) - Time taken in seconds

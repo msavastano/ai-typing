@@ -6,7 +6,23 @@ import { doc, onSnapshot, updateDoc, collection, query, orderBy, limit } from 'f
 import { db } from '@/lib/firebase';
 import TypingTest from '@/components/typing-test';
 import KeyboardHeatmap from '@/components/keyboard-heatmap';
+import KeyboardProgress from '@/components/keyboard-progress';
+import { KEYBOARD_ROWS, KEYBOARD_ROW_OFFSETS, KEYBOARD_LETTERS } from '@/lib/keyboard-layout';
+import { tierFor, tierLabel } from '@/lib/curriculum';
 import { getGeminiKey, setGeminiKey, clearGeminiKey } from '@/lib/gemini-key';
+import {
+  coerceKeyStats,
+  coerceDigraphStats,
+  rankStruggleKeys,
+  listMasteredKeys,
+  rankSlowDigraphs,
+  errorRateByKey,
+  recentLevel,
+  keyProgress,
+  progressSummary,
+  nearestToMastery,
+  type MasteryCandidate,
+} from '@/lib/skill-model';
 
 function Sparkline({ data, width = 340, height = 60 }: { data: number[]; width?: number; height?: number }) {
   if (data.length < 2) return null;
@@ -48,12 +64,8 @@ const PRESET_TOPICS = [
 
 const PRESET_VALUES = new Set(PRESET_TOPICS.map(t => t.value));
 
-const ROWS = [
-  ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'],
-  ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'],
-  ['z', 'x', 'c', 'v', 'b', 'n', 'm'],
-];
-const ROW_OFFSETS = [0, 18, 46];
+const ROWS = KEYBOARD_ROWS;
+const ROW_OFFSETS = KEYBOARD_ROW_OFFSETS;
 
 function Toggle({ on, onChange }: { on: boolean; onChange: () => void }) {
   return (
@@ -283,6 +295,39 @@ export default function Home() {
   const weakKeys = stats?.weakKeys && typeof stats.weakKeys === 'object' ? stats.weakKeys : {};
   const bigramData = stats?.bigrams && typeof stats.bigrams === 'object' ? stats.bigrams : {};
 
+  // Text the user has already typed, newest first, so the generator can avoid it.
+  // Lessons saved before block texts were persisted store a `[N-chunk session]`
+  // placeholder — skip those.
+  const recentTexts: string[] = recentLessons
+    .flatMap((l: any) => (Array.isArray(l.blocks) ? l.blocks : typeof l.text === 'string' ? [l.text] : []))
+    .filter((t: unknown): t is string => typeof t === 'string' && t.length > 0 && !t.startsWith('['))
+    .slice(0, 12);
+
+  // Skill model: what to practise, ranked by error *rate* and per-key latency
+  // rather than raw error counts. Empty until a key clears the evidence floor.
+  const keyStats = coerceKeyStats(stats?.keyStats);
+  const struggleKeys = rankStruggleKeys(keyStats, 5);
+  const masteredKeys = listMasteredKeys(keyStats);
+  const slowDigraphs = rankSlowDigraphs(coerceDigraphStats(stats?.digraphStats));
+  const keyErrorRates = errorRateByKey(keyStats);
+
+  // Trailing-window level, so difficulty follows improvement. recentLessons is
+  // newest-first, which is what recentLevel expects.
+  const recentWpm = recentLevel(recentLessons.map((l: any) => l.wpm));
+  const recentAccuracy = recentLevel(recentLessons.map((l: any) => l.accuracy));
+
+  // Progression: per-letter standing, and the tier the planner is generating for.
+  const letterProgress = keyProgress(keyStats, KEYBOARD_LETTERS);
+  const progress = progressSummary(letterProgress);
+  const almostThere = nearestToMastery(letterProgress);
+  const hasProgressData = progress.mastered + progress.practising > 0;
+  const tier = tierFor(
+    stats?.totalLessons ?? 0,
+    recentWpm ?? stats?.avgWpm ?? 0,
+    recentAccuracy ?? stats?.avgAccuracy ?? 0,
+  );
+  const tierInfo = tierLabel(tier);
+
   // ── Typing session ────────────────────────────────────────────
   if (isTyping) {
     return (
@@ -301,6 +346,12 @@ export default function Home() {
             calmMode={calmMode}
             totalChunks={sessionBlocks}
             focusKeys={focusKeys}
+            recentTexts={recentTexts}
+            struggleKeys={struggleKeys}
+            masteredKeys={masteredKeys}
+            slowDigraphs={slowDigraphs}
+            recentWpm={recentWpm}
+            recentAccuracy={recentAccuracy}
             onComplete={() => setIsTyping(false)}
             onCancel={() => setIsTyping(false)}
           />
@@ -408,15 +459,26 @@ export default function Home() {
           </Card>
 
           {/* Stats grid */}
+          {/* Recent figures lead, because they are what the lesson planner uses —
+              a lifetime average would understate an improving typist. */}
           <div className="grid grid-cols-3 gap-2.5">
             {[
-              { label: 'Average WPM', value: Math.round(stats?.avgWpm || 0) },
-              { label: 'Average accuracy', value: `${Math.round(stats?.avgAccuracy || 0)}%` },
-              { label: 'Lessons completed', value: stats?.totalLessons || 0 },
+              {
+                label: recentWpm !== null ? 'Recent WPM' : 'Average WPM',
+                value: Math.round(recentWpm ?? stats?.avgWpm ?? 0),
+                sub: recentWpm !== null ? `${Math.round(stats?.avgWpm || 0)} lifetime` : null,
+              },
+              {
+                label: recentAccuracy !== null ? 'Recent accuracy' : 'Average accuracy',
+                value: `${Math.round(recentAccuracy ?? stats?.avgAccuracy ?? 0)}%`,
+                sub: recentAccuracy !== null ? `${Math.round(stats?.avgAccuracy || 0)}% lifetime` : null,
+              },
+              { label: 'Lessons completed', value: stats?.totalLessons || 0, sub: null },
             ].map(s => (
               <Card key={s.label} className="p-5 flex flex-col gap-1.5">
                 <div className="font-serif text-[0.78rem] text-[#7b7771]">{s.label}</div>
                 <div className="font-serif text-[2.4rem] font-bold text-[#2a2620] leading-none">{s.value}</div>
+                {s.sub && <div className="font-serif text-[0.68rem] text-[#b5b0aa]">{s.sub}</div>}
               </Card>
             ))}
           </div>
@@ -428,24 +490,70 @@ export default function Home() {
                 AI insight
               </div>
               <div className="font-serif text-[0.9rem] text-[#2a2620] leading-[1.65] italic">
-                {Object.keys(weakKeys).length > 0
-                  ? <>You consistently slow down on {topWeakKeys(weakKeys).map((k, i, arr) => (
-                      <span key={k}>
-                        <strong className="not-italic font-semibold">{k}</strong>{i < arr.length - 1 ? (i === arr.length - 2 ? ', and ' : ', ') : ''}
-                      </span>
-                    ))}. Focus on keeping your hands relaxed — tension slows your reach.</>
-                  : <>Run your first lesson — TypeMind will start tracking your keystrokes and surface insights here.</>
+                {struggleKeys.length > 0
+                  ? <>Your next gains are on {keyList(struggleKeys.map(s => s.key))}. {struggleAdvice(struggleKeys.map(s => s.reason))}</>
+                  : Object.keys(weakKeys).length > 0
+                    ? <>You consistently slow down on {keyList(topWeakKeys(weakKeys))}. Focus on keeping your hands relaxed — tension slows your reach.</>
+                    : <>Run your first lesson — TypeMind will start tracking your keystrokes and surface insights here.</>
                 }
               </div>
             </div>
           )}
 
           {/* Weak keys */}
-          {Object.keys(weakKeys).length > 0 && (
+          {(Object.keys(keyErrorRates).length > 0 || Object.keys(weakKeys).length > 0) && (
             <Card className="p-5">
               <div className="font-serif text-base font-bold text-[#2a2620] mb-1">Weak keys</div>
-              <div className="font-serif text-[0.78rem] text-[#7b7771] mb-3.5">Keys where you make the most errors</div>
-              <KeyboardHeatmap weakKeys={weakKeys} />
+              <div className="font-serif text-[0.78rem] text-[#7b7771] mb-3.5">
+                {Object.keys(keyErrorRates).length > 0
+                  ? 'How often you miss each key, as a share of the times you reach for it'
+                  : 'Keys where you make the most errors'}
+              </div>
+              <KeyboardHeatmap weakKeys={weakKeys} errorRates={keyErrorRates} />
+            </Card>
+          )}
+
+          {/* Progression */}
+          {hasProgressData && (
+            <Card className="p-5">
+              <div className="flex items-center justify-between mb-1 gap-3 flex-wrap">
+                <div className="font-serif text-base font-bold text-[#2a2620]">Progression</div>
+                <span
+                  className="font-serif text-[0.72rem] font-medium text-[#5c6f52] bg-[#eef2ec] border border-[#d6e0d2] rounded-full px-2.5 py-0.5"
+                  title={tierInfo.detail}
+                >
+                  {tierInfo.name}
+                </span>
+              </div>
+              <div className="font-serif text-[0.78rem] text-[#7b7771] mb-3.5 leading-[1.6]">
+                {progress.mastered} of {progress.total} letters mastered. {tierInfo.detail}
+              </div>
+
+              <div className="w-full h-[6px] bg-[#e5e2df] rounded-full overflow-hidden mb-5">
+                <div
+                  className="h-full bg-[#5c6f52] rounded-full transition-[width] duration-300"
+                  style={{ width: `${Math.round((progress.mastered / Math.max(progress.total, 1)) * 100)}%` }}
+                />
+              </div>
+
+              <KeyboardProgress progress={letterProgress} />
+
+              {(almostThere.length > 0 || slowDigraphs.length > 0) && (
+                <div className="mt-5 pt-4 border-t border-[#e5e2df] flex flex-col gap-1.5">
+                  {almostThere.length > 0 && (
+                    <div className="font-serif text-[0.78rem] text-[#7b7771] leading-[1.6]">
+                      <span className="text-[#2a2620] font-semibold">Closest to mastery: </span>
+                      {almostThere.map(describeMasteryCandidate).join(', ')}
+                    </div>
+                  )}
+                  {slowDigraphs.length > 0 && (
+                    <div className="font-serif text-[0.78rem] text-[#7b7771] leading-[1.6]">
+                      <span className="text-[#2a2620] font-semibold">Slowest transitions: </span>
+                      {slowDigraphs.join(', ')}
+                    </div>
+                  )}
+                </div>
+              )}
             </Card>
           )}
 
@@ -643,6 +751,38 @@ function topWeakKeys(weakKeys: Record<string, number>): string[] {
     .sort(([, a], [, b]) => b - a)
     .slice(0, 3)
     .map(([k]) => k);
+}
+
+/**
+ * Mastery is gated on both a low score and enough attempts, so say which gate is
+ * actually holding a key back rather than showing a number that may be moot.
+ */
+function describeMasteryCandidate(candidate: MasteryCandidate): string {
+  return candidate.awaitingEvidence
+    ? `${candidate.key} (${candidate.attemptsRemaining} more attempts)`
+    : `${candidate.key} (${(candidate.errorRate * 100).toFixed(1)}% errors)`;
+}
+
+/** Render keys as a bolded, comma-separated list ending in "and". */
+function keyList(keys: string[]) {
+  return keys.slice(0, 3).map((k, i, arr) => (
+    <span key={k}>
+      <strong className="not-italic font-semibold">{k === ' ' ? 'space' : k}</strong>
+      {i < arr.length - 1 ? (i === arr.length - 2 ? ', and ' : ', ') : ''}
+    </span>
+  ));
+}
+
+/** Different weaknesses need different advice, so say which one this is. */
+function struggleAdvice(reasons: string[]): string {
+  const slice = reasons.slice(0, 3);
+  if (slice.every(r => r === 'speed')) {
+    return 'You hit them accurately but slowly — it is the reach costing you, not the aim, so let the lesson build rhythm rather than forcing pace.';
+  }
+  if (slice.every(r => r === 'accuracy')) {
+    return 'These go wrong more often than the keys around them. Slow down on the approach and keep your hands relaxed.';
+  }
+  return 'Some of these you mistype and some you just reach for slowly, so expect a mix of careful repetition and rhythm work.';
 }
 
 function Chip({

@@ -52,15 +52,25 @@ export function updateRunningAverage(oldAvg: number, oldCount: number, newValue:
   return ((oldAvg * oldCount) + newValue) / newCount;
 }
 
+/**
+ * Sum two count maps, decaying neither. Used to fold a finished block into the
+ * session totals, where both sides are equally current.
+ */
+export function addCounts(
+  a: Record<string, number>,
+  b: Record<string, number>
+): Record<string, number> {
+  const merged = { ...a };
+  for (const [key, count] of Object.entries(b)) {
+    merged[key] = (merged[key] || 0) + count;
+  }
+  return merged;
+}
+
 /** Merge new error counts into decayed existing counts. */
 export function mergeWithDecay(
   existing: Record<string, number>,
   newCounts: Record<string, number>
 ): Record<string, number> {
-  const decayed = applyDecay(existing);
-  const merged = { ...decayed };
-  for (const [key, count] of Object.entries(newCounts)) {
-    merged[key] = (merged[key] || 0) + count;
-  }
-  return merged;
+  return addCounts(applyDecay(existing), newCounts);
 }

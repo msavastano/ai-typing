@@ -1,5 +1,14 @@
 import { GoogleGenAI } from '@google/genai';
 import { NextRequest, NextResponse } from 'next/server';
+import {
+  varietyIndex,
+  maxSimilarity,
+  recentOpenings,
+  SIMILARITY_THRESHOLD,
+} from '@/lib/lesson-variety';
+import { planLesson, renderLessonPrompt, planSummary, type PlanInput } from '@/lib/curriculum';
+import { toTypeableText } from '@/lib/typeable-text';
+import type { StruggleKey } from '@/lib/skill-model';
 
 // Simple in-memory rate limiter: max 10 requests per minute per IP
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -24,116 +33,72 @@ interface GenerateRequest {
   avgAccuracy: number;
   totalLessons: number;
   topic: string;
-  chunkIndex?: number;  // 0-based index within a multi-chunk session
-  totalChunks?: number; // total chunks in the session
-  focusKeys?: string[]; // user-chosen keys to focus on (overrides AI-detected weak keys)
+  chunkIndex?: number;    // 0-based index within a multi-chunk session
+  totalChunks?: number;   // total chunks in the session
+  focusKeys?: string[];   // user-chosen keys, overriding the skill model
+  recentTexts?: string[]; // lessons the user has already typed, newest first
+  varietyNonce?: number;  // bumped by the client on Skip / Practice again
+  // Skill model (preferred over the raw weakKeys/avg fields when present).
+  struggleKeys?: StruggleKey[];
+  masteredKeys?: string[];
+  slowDigraphs?: string[];
+  recentWpm?: number | null;
+  recentAccuracy?: number | null;
 }
 
-// Vary the angle/framing per chunk so the AI doesn't produce near-identical text
-const CHUNK_VARIETY = [
-  'Use a narrative or storytelling angle.',
-  'Use a factual or informational angle.',
-  'Use a descriptive or observational angle.',
-  'Use a reflective or first-person angle.',
-  'Use a dialogue-driven angle with quoted speech.',
-  'Use a how-to or instructional angle.',
-  'Use a comparative angle, contrasting two ideas.',
-  'Use a historical or timeline angle.',
-];
+/** Cap what we accept from the client so a large body can't bloat the prompt. */
+const MAX_RECENT_TEXTS = 12;
 
-const FRESH_HINTS = [
-  'Open with an unexpected concrete noun.',
-  'Anchor the text in a specific season or time of day.',
-  'Include at least one place name.',
-  'Include at least one number written as a numeral.',
-  'Use an unusual but real verb in the first sentence.',
-  'Mention a small, tangible object.',
-  'Reference a sound or smell.',
-  'Begin with a question or surprising statement.',
-];
+/** Strip the "custom:" prefix the topic picker uses for free-text topics. */
+function normalizeTopic(topic: string): string {
+  if (!topic) return 'general';
+  return topic.startsWith('custom:') ? topic.slice(7).trim() || 'general' : topic;
+}
 
-function buildPrompt(data: GenerateRequest): string {
-  const { weakKeys, bigrams, avgWpm, avgAccuracy, totalLessons } = data;
+/**
+ * Translate a request into planner input. The planner owns every teaching
+ * decision; this only picks the best available source for each field.
+ *
+ * `offset` shifts the rotation index. The first attempt uses 0; a regeneration
+ * after a detected repeat uses 1, which changes framing and often the mode too.
+ */
+function toPlanInput(data: GenerateRequest, offset = 0): PlanInput {
   const chunkIndex = data.chunkIndex ?? 0;
   const totalChunks = data.totalChunks ?? 1;
-  // Strip "custom:" prefix if present
-  const topic = data.topic.startsWith('custom:') ? data.topic.slice(7).trim() || 'general' : data.topic;
 
-  // Determine difficulty tier
-  let difficulty: string;
-  let wordCount: string;
-  if (totalLessons < 5 || avgWpm < 25) {
-    difficulty = 'Use simple, common words with short sentences.';
-    wordCount = '25-35';
-  } else if (avgWpm < 45 || avgAccuracy < 85) {
-    difficulty = 'Use moderately complex vocabulary with varied sentence structure.';
-    wordCount = '35-50';
-  } else {
-    difficulty = 'Use rich vocabulary, varied punctuation (commas, semicolons, dashes), and include some numbers or capitalized proper nouns.';
-    wordCount = '50-70';
-  }
+  // Prefer the trailing-window level over the lifetime average, which never
+  // decays and would otherwise pin an improving user to their first week.
+  const level = typeof data.recentWpm === 'number' ? data.recentWpm : data.avgWpm;
+  const levelAccuracy = typeof data.recentAccuracy === 'number' ? data.recentAccuracy : data.avgAccuracy;
 
-  // Use user-chosen focus keys if provided, otherwise fall back to AI-detected weak keys
-  const sortedKeys = data.focusKeys && data.focusKeys.length > 0
-    ? data.focusKeys.slice(0, 8)
-    : Object.entries(weakKeys)
+  // Fall back to the legacy raw error counts when the skill model has not yet
+  // gathered enough evidence to rank anything.
+  const struggleKeys: StruggleKey[] = data.struggleKeys?.length
+    ? data.struggleKeys
+    : Object.entries(data.weakKeys ?? {})
         .sort(([, a], [, b]) => b - a)
         .slice(0, 5)
-        .map(([k]) => k);
+        .map(([key]) => ({ key, score: 0, reason: 'accuracy' as const }));
 
-  // Top bigram confusions (e.g., "expected r but typed t")
-  const sortedBigrams = Object.entries(bigrams)
+  const confusions = Object.entries(data.bigrams ?? {})
     .sort(([, a], [, b]) => b - a)
     .slice(0, 3)
-    .map(([k]) => k);
+    .map(([pair]) => pair);
 
-  // Decide exercise type: beginners with weak keys get focused drills sometimes,
-  // programming topic gets code-like text sometimes
-  const isBeginnerWithWeakKeys = (totalLessons < 5 || avgWpm < 25) && sortedKeys.length > 0;
-  const useDrill = isBeginnerWithWeakKeys && Math.random() < 0.4;
-  const useCodeSnippet = topic === 'programming' && !useDrill && Math.random() < 0.5;
-
-  let prompt: string;
-
-  if (useDrill) {
-    prompt = `Generate a focused typing drill (around ${wordCount} words) that builds muscle memory for these keys: ${sortedKeys.join(', ')}. Use a variety of real, common short words that feature those letters. Do NOT repeat any word more than twice. Vary sentence structure — for example "jeff fed the fluffy fox five figs and found fresh fruit" for the letter f.`;
-  } else if (useCodeSnippet) {
-    prompt = `Generate a realistic-looking code snippet (around ${wordCount} words worth of text) for a typing test. Use common programming patterns: variable declarations, function calls, if/else blocks, loops, string literals, comments. Use symbols programmers type often: = {} () [] ; : . , < > / " ' \` _ - + && ||. Output plain text that looks like code but can be typed as a single continuous block with no actual line breaks.`;
-    if (sortedKeys.length > 0) {
-      prompt += ` Include variable/function names that use these letters the user struggles with: ${sortedKeys.join(', ')}.`;
-    }
-  } else {
-    const variety = CHUNK_VARIETY[Math.floor(Math.random() * CHUNK_VARIETY.length)];
-    prompt = `Generate a single paragraph of plain prose (around ${wordCount} words) for a typing test. ${difficulty} ${variety}`;
-
-    // Topic guidance
-    if (topic && topic !== 'general') {
-      prompt += ` Write about the topic: ${topic}.`;
-    }
-
-    if (totalChunks > 1) {
-      prompt += ` This is exercise ${chunkIndex + 1} of ${totalChunks} in a session — make the content distinct from other exercises on this topic.`;
-    }
-  }
-
-  // Weak keys targeting (for prose and code modes)
-  if (!useDrill && sortedKeys.length > 0) {
-    prompt += ` The user struggles with these letters: ${sortedKeys.join(', ')}. Include words that use these letters frequently.`;
-  }
-
-  // Bigram confusion targeting
-  if (sortedBigrams.length > 0) {
-    const bigramDescriptions = sortedBigrams.map(b => {
-      const [expected, typed] = b.split('→');
-      return `confuses "${expected}" with "${typed}"`;
-    });
-    prompt += ` The user often ${bigramDescriptions.join(', and ')}. Include words that help practice the correct keys.`;
-  }
-
-  prompt += ' ' + FRESH_HINTS[Math.floor(Math.random() * FRESH_HINTS.length)];
-  prompt += ' Do not repeat any word more than 3 times in the entire text. Output ONLY the text. No quotes, no markdown, no labels, no bullet points.';
-
-  return prompt;
+  return {
+    index: varietyIndex(data.totalLessons, chunkIndex, data.varietyNonce ?? 0) + offset,
+    totalLessons: data.totalLessons,
+    level,
+    levelAccuracy,
+    topic: normalizeTopic(data.topic),
+    struggleKeys,
+    masteredKeys: data.masteredKeys ?? [],
+    focusKeys: data.focusKeys ?? [],
+    slowDigraphs: data.slowDigraphs ?? [],
+    confusions,
+    chunkIndex,
+    totalChunks,
+  };
 }
 
 export async function POST(request: NextRequest) {
@@ -149,27 +114,58 @@ export async function POST(request: NextRequest) {
 
   try {
     const body: GenerateRequest = await request.json();
-
-    const prompt = buildPrompt(body);
+    const recentTexts = (body.recentTexts ?? []).slice(0, MAX_RECENT_TEXTS);
+    const openings = recentOpenings(recentTexts);
 
     const ai = new GoogleGenAI({ apiKey });
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.1-flash-lite-preview',
-      contents: prompt,
-      config: {
-        temperature: 1.2,
-        seed: Math.floor(Math.random() * 2_147_483_647),
-      },
-    });
+    const attempt = async (offset: number) => {
+      const plan = planLesson(toPlanInput(body, offset));
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.5-flash-lite',
+        contents: renderLessonPrompt(plan, openings),
+        config: {
+          temperature: 1.2,
+          seed: Math.floor(Math.random() * 2_147_483_647),
+        },
+      });
+      // Models reach for em dashes and curly quotes, which have no key on a
+      // standard keyboard and would make the lesson impossible to complete.
+      const text = toTypeableText(response.text ?? '') || null;
+      return { plan, text };
+    };
 
-    const text = response.text?.trim().replace(/\n/g, ' ').replace(/\s+/g, ' ') || null;
+    let { plan, text } = await attempt(0);
 
     if (!text) {
       return NextResponse.json({ error: 'Empty response from AI' }, { status: 502 });
     }
 
-    return NextResponse.json({ text });
+    // The prompt asks the model not to repeat itself, but small models drift back
+    // to their favourite openings. Verify, and give it exactly one more attempt
+    // under a shifted rotation before accepting the closer of the two.
+    let score = maxSimilarity(text, recentTexts);
+    if (score > SIMILARITY_THRESHOLD) {
+      const retry = await attempt(1);
+      if (retry.text) {
+        const retryScore = maxSimilarity(retry.text, recentTexts);
+        if (retryScore < score) {
+          text = retry.text;
+          plan = retry.plan;
+          score = retryScore;
+        }
+      }
+    }
+
+    return NextResponse.json({
+      text,
+      repeated: score > SIMILARITY_THRESHOLD,
+      // Surfaced so the user can see what this lesson is for, and so the plan is
+      // inspectable rather than buried in a prompt string.
+      focus: planSummary(plan),
+      mode: plan.mode,
+      rationale: plan.rationale,
+    });
   } catch (error) {
     console.error('Generate lesson error:', error);
     const message = error instanceof Error ? error.message : '';
