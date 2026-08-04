@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  addCounts,
   applyDecay,
   countCorrectChars,
   calculateWpm,
@@ -9,6 +10,26 @@ import {
   mergeWithDecay,
   DECAY_FACTOR,
 } from './typing-metrics';
+
+describe('addCounts', () => {
+  it('sums overlapping keys without decaying either side', () => {
+    expect(addCounts({ a: 3, b: 1 }, { a: 2, c: 5 })).toEqual({ a: 5, b: 1, c: 5 });
+  });
+
+  it('returns a copy rather than mutating its inputs', () => {
+    const a = { a: 1 };
+    const b = { a: 1 };
+    addCounts(a, b);
+    expect(a).toEqual({ a: 1 });
+    expect(b).toEqual({ a: 1 });
+  });
+
+  it('handles empty maps on either side', () => {
+    expect(addCounts({}, { a: 2 })).toEqual({ a: 2 });
+    expect(addCounts({ a: 2 }, {})).toEqual({ a: 2 });
+    expect(addCounts({}, {})).toEqual({});
+  });
+});
 
 describe('applyDecay', () => {
   it('multiplies values by decay factor and rounds', () => {
