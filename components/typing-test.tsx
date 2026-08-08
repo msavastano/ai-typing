@@ -8,6 +8,7 @@ import { collection, addDoc, doc, runTransaction, serverTimestamp } from 'fireba
 import {
   countCorrectChars,
   calculateWpm,
+  calculateGrossWpm,
   calculateAccuracy,
   updateRunningAverage,
   mergeWithDecay,
@@ -99,6 +100,9 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
   const blockMistakes = useRef<Record<string, number>>({});
   const blockBigrams = useRef<Record<string, number>>({});
   const [totalErrors, setTotalErrors] = useState(0);
+  // Mirrors totalErrors for the same staleness reason as the two refs above.
+  // The state copy stays because the errors pill and live accuracy render it.
+  const blockErrors = useRef(0);
   const [saving, setSaving] = useState(false);
   const [errorPops, setErrorPops] = useState<{ id: number; char: string; x: number; y: number }[]>([]);
   const [paused, setPaused] = useState(false);
@@ -107,7 +111,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
   const [comboFlash, setComboFlash] = useState(false);
   const [bestCombo, setBestCombo] = useState(0);
   const [focusNudge, setFocusNudge] = useState<string | null>(null);
-  const [results, setResults] = useState<{ wpm: number; accuracy: number; rawAccuracy: number; duration: number; bestCombo: number } | null>(null);
+  const [results, setResults] = useState<{ wpm: number; grossWpm: number; accuracy: number; rawAccuracy: number; duration: number; bestCombo: number } | null>(null);
   const [focusRating, setFocusRating] = useState<number | null>(null);
   const [currentChunk, setCurrentChunk] = useState(1);
   const [chunkTransition, setChunkTransition] = useState(false);
@@ -167,6 +171,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
     setEndTime(null);
     blockMistakes.current = {};
     blockBigrams.current = {};
+    blockErrors.current = 0;
     setTotalErrors(0);
     setPaused(false);
     setPausedTime(0);
@@ -350,7 +355,8 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
       if (expectedChar && typedChar !== expectedChar) {
         setCombo(0);
         if (audioEnabled) playErrorSound();
-        setTotalErrors(prev => prev + 1);
+        blockErrors.current += 1;
+      setTotalErrors(prev => prev + 1);
         const missedKey = expectedChar.toLowerCase();
         blockMistakes.current[missedKey] = (blockMistakes.current[missedKey] || 0) + 1;
         const bigramKey = `${missedKey}→${typedChar.toLowerCase()}`;
@@ -449,7 +455,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
 
     chunkStats.current.totalCorrect += correctChars;
     chunkStats.current.totalChars += text.length;
-    chunkStats.current.totalErrors += totalErrors;
+    chunkStats.current.totalErrors += blockErrors.current;
     chunkStats.current.totalDuration += durationSeconds;
     blockTexts.current.push(text);
     commitBlock();
@@ -462,6 +468,9 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
     setSaving(true);
     const stats = chunkStats.current;
     const wpm = calculateWpm(stats.totalCorrect, stats.totalDuration);
+    // Shown alongside wpm so the results screen can spell out gross x accuracy
+    // = net. Not persisted: it is derivable from the two numbers that are.
+    const grossWpm = calculateGrossWpm(stats.totalChars, stats.totalDuration);
     const rawAccuracy = calculateAccuracy(stats.totalChars, stats.totalErrors);
     const finalUncorrected = stats.totalChars - stats.totalCorrect;
     const accuracy = calculateAccuracy(stats.totalChars, finalUncorrected);
@@ -535,7 +544,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
         });
       });
 
-      setResults({ wpm, accuracy, rawAccuracy, duration: Math.round(stats.totalDuration), bestCombo });
+      setResults({ wpm, grossWpm, accuracy, rawAccuracy, duration: Math.round(stats.totalDuration), bestCombo });
       setSaving(false);
     } catch (error) {
       console.error("Failed to save lesson:", error);
@@ -643,11 +652,39 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
           </div>
           <h2 className="font-serif text-[2rem] font-bold text-[#2a2620] tracking-[-0.02em] mb-8">Well done.</h2>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 mb-7">
+          {/*
+            Speed spelled out rather than reported as one number. The net figure
+            is the true calculateWpm value, so multiplying the two rounded
+            numbers on screen can land a point either side of it — expected.
+          */}
+          {/* Stacks below sm: three tiles plus operators do not divide a narrow
+              card evenly, since "Accuracy" cannot wrap the way the others do. */}
+          <div className="flex flex-col sm:flex-row items-stretch gap-2 mb-2.5">
+            <div className="bg-[#f6f3f1] border border-[#e5e2df] rounded-lg p-4 text-center flex-1">
+              <div className="font-serif text-[0.65rem] text-[#7b7771] uppercase tracking-[0.08em] mb-1.5">Gross WPM</div>
+              <div className="font-serif text-[1.6rem] font-bold text-[#665f51] leading-none">{results.grossWpm}</div>
+            </div>
+            <div className="font-serif text-[1.1rem] text-[#a8a29a] self-center px-0.5" aria-hidden="true">×</div>
+            <div className="bg-[#f6f3f1] border border-[#e5e2df] rounded-lg p-4 text-center flex-1">
+              <div className="font-serif text-[0.65rem] text-[#7b7771] uppercase tracking-[0.08em] mb-1.5">Accuracy</div>
+              <div className="font-serif text-[1.6rem] font-bold text-[#665f51] leading-none">{results.accuracy}%</div>
+            </div>
+            <div className="font-serif text-[1.1rem] text-[#a8a29a] self-center px-0.5" aria-hidden="true">=</div>
+            <div className="bg-[#efe9e2] border border-[#d6cfc4] rounded-lg p-4 text-center flex-1">
+              <div className="font-serif text-[0.65rem] text-[#7b7771] uppercase tracking-[0.08em] mb-1.5">Net WPM</div>
+              <div className="font-serif text-[2rem] font-bold text-[#2a2620] leading-none">{results.wpm}</div>
+            </div>
+          </div>
+
+          <p className="font-serif text-[0.72rem] text-[#7b7771] leading-relaxed mb-4">
+            Net WPM is your speed after mistakes — the number worth tracking. Raw
+            accuracy below counts every mistyped key, including ones you caught
+            and fixed.
+          </p>
+
+          <div className="grid grid-cols-2 gap-2.5 mb-7">
             {[
-              { label: 'WPM', val: results.wpm },
-              { label: 'Accuracy', val: `${results.accuracy}%` },
-              { label: 'Raw', val: `${results.rawAccuracy}%` },
+              { label: 'Raw accuracy', val: `${results.rawAccuracy}%` },
               { label: 'Best streak', val: results.bestCombo },
             ].map(s => (
               <div key={s.label} className="bg-[#f6f3f1] border border-[#e5e2df] rounded-lg p-4 text-center">

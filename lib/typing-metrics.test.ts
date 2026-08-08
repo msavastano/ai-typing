@@ -4,6 +4,7 @@ import {
   applyDecay,
   countCorrectChars,
   calculateWpm,
+  calculateGrossWpm,
   countUncorrectedErrors,
   calculateAccuracy,
   updateRunningAverage,
@@ -101,6 +102,74 @@ describe('calculateWpm', () => {
     expect(calculateWpm(25, 30)).toBe(10);
     // 27 chars in 60s = 5.4 words/min → rounds to 5
     expect(calculateWpm(27, 60)).toBe(5);
+  });
+});
+
+describe('calculateGrossWpm', () => {
+  it('calculates WPM correctly (1 word = 5 chars)', () => {
+    // 50 chars = 10 words, in 60 seconds = 10 WPM
+    expect(calculateGrossWpm(50, 60)).toBe(10);
+  });
+
+  it('returns 0 for zero duration', () => {
+    expect(calculateGrossWpm(50, 0)).toBe(0);
+  });
+
+  it('returns 0 for negative duration', () => {
+    expect(calculateGrossWpm(50, -1)).toBe(0);
+  });
+
+  it('returns 0 for zero chars', () => {
+    expect(calculateGrossWpm(0, 60)).toBe(0);
+  });
+
+  it('rounds to nearest integer', () => {
+    expect(calculateGrossWpm(25, 30)).toBe(10);
+    expect(calculateGrossWpm(27, 60)).toBe(5);
+  });
+
+  it('counts mistyped chars, unlike net', () => {
+    // 50 chars attempted, only 40 of them correct: gross ignores the gap.
+    expect(calculateGrossWpm(50, 60)).toBe(10);
+    expect(calculateWpm(40, 60)).toBe(8);
+  });
+
+  it('equals net WPM when nothing was mistyped', () => {
+    expect(calculateGrossWpm(50, 60)).toBe(calculateWpm(50, 60));
+  });
+});
+
+describe('gross x accuracy = net', () => {
+  // The identity the results screen displays: net is not an independent
+  // measurement, it is gross scaled by accuracy. Exact before rounding.
+  const cases = [
+    { total: 250, correct: 200, duration: 60 },
+    { total: 480, correct: 461, duration: 120 },
+    { total: 137, correct: 137, duration: 45 },
+    { total: 300, correct: 0, duration: 90 },
+  ];
+
+  for (const { total, correct, duration } of cases) {
+    it(`holds for ${correct}/${total} chars in ${duration}s`, () => {
+      const gross = (total / 5) / (duration / 60);
+      // The true ratio, not calculateAccuracy — that rounds to whole percent,
+      // which is a display concern and is covered by the next test.
+      const accuracy = correct / total;
+      const net = (correct / 5) / (duration / 60);
+
+      expect(gross * accuracy).toBeCloseTo(net, 6);
+      expect(Math.round(net)).toBe(calculateWpm(correct, duration));
+    });
+  }
+
+  it('stays within a point after both sides are rounded for display', () => {
+    // What the user actually multiplies on screen: 32 x 93% = 29.76 -> 30.
+    const total = 480;
+    const correct = 447;
+    const duration = 90;
+
+    const shown = calculateGrossWpm(total, duration) * (calculateAccuracy(total, total - correct) / 100);
+    expect(Math.abs(Math.round(shown) - calculateWpm(correct, duration))).toBeLessThanOrEqual(1);
   });
 });
 

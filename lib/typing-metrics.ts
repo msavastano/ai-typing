@@ -31,6 +31,20 @@ export function calculateWpm(correctChars: number, durationSeconds: number): num
   return Math.max(0, Math.round((correctChars / 5) / durationMinutes));
 }
 
+/**
+ * Gross WPM: every character attempted counts, errors included.
+ *
+ * Net is not a separate measurement — it is this number scaled by accuracy.
+ * Since accuracy is correctChars/totalChars, gross * accuracy reduces to
+ * (correctChars/5)/minutes, which is exactly calculateWpm. Computing gross
+ * lets the results screen show that multiplication instead of hiding it.
+ */
+export function calculateGrossWpm(totalChars: number, durationSeconds: number): number {
+  if (durationSeconds <= 0) return 0;
+  const durationMinutes = durationSeconds / 60;
+  return Math.max(0, Math.round((totalChars / 5) / durationMinutes));
+}
+
 /** Count uncorrected errors (positions where finalInput differs from text). */
 export function countUncorrectedErrors(text: string, finalInput: string): number {
   let errors = 0;
