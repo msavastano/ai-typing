@@ -1,4 +1,4 @@
-import { GoogleGenAI } from '@google/genai';
+import Anthropic from '@anthropic-ai/sdk';
 import { NextRequest, NextResponse } from 'next/server';
 import {
   varietyIndex,
@@ -9,6 +9,8 @@ import {
 import { planLesson, renderLessonPrompt, planSummary, type PlanInput } from '@/lib/curriculum';
 import { toTypeableText } from '@/lib/typeable-text';
 import type { StruggleKey } from '@/lib/skill-model';
+
+const MODEL = 'claude-haiku-5-5';
 
 // Simple in-memory rate limiter: max 10 requests per minute per IP
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -107,9 +109,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Too many requests. Please wait before generating another lesson.' }, { status: 429 });
   }
 
-  const apiKey = request.headers.get('x-gemini-api-key')?.trim();
+  const apiKey = request.headers.get('x-anthropic-api-key')?.trim();
   if (!apiKey) {
-    return NextResponse.json({ error: 'Missing Gemini API key. Add your key in the dashboard to generate lessons.' }, { status: 401 });
+    return NextResponse.json({ error: 'Missing Anthropic API key. Add your key in the dashboard to generate lessons.' }, { status: 401 });
   }
 
   try {
@@ -117,21 +119,29 @@ export async function POST(request: NextRequest) {
     const recentTexts = (body.recentTexts ?? []).slice(0, MAX_RECENT_TEXTS);
     const openings = recentOpenings(recentTexts);
 
-    const ai = new GoogleGenAI({ apiKey });
+    const client = new Anthropic({ apiKey });
 
     const attempt = async (offset: number) => {
       const plan = planLesson(toPlanInput(body, offset));
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.5-flash-lite',
-        contents: renderLessonPrompt(plan, openings),
-        config: {
-          temperature: 1.2,
-          seed: Math.floor(Math.random() * 2_147_483_647),
-        },
+      // The API no longer accepts sampling parameters (temperature, seed), so
+      // variety comes from the planner's rotation and the repeat check below.
+      const response = await client.messages.create({
+        model: MODEL,
+        max_tokens: 16000,
+        // A short practice passage doesn't need deep reasoning; low effort keeps
+        // lesson generation fast.
+        output_config: { effort: 'low' },
+        messages: [{ role: 'user', content: renderLessonPrompt(plan, openings) }],
       });
+      if (response.stop_reason === 'refusal') {
+        return { plan, text: null };
+      }
+      const raw = response.content
+        .map((block) => (block.type === 'text' ? block.text : ''))
+        .join('');
       // Models reach for em dashes and curly quotes, which have no key on a
       // standard keyboard and would make the lesson impossible to complete.
-      const text = toTypeableText(response.text ?? '') || null;
+      const text = toTypeableText(raw) || null;
       return { plan, text };
     };
 
@@ -168,10 +178,12 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error('Generate lesson error:', error);
-    const message = error instanceof Error ? error.message : '';
     // Surface key problems clearly so the user can fix their key
-    if (/api[_ ]?key|permission|unauthenticated|invalid|403|401|400/i.test(message)) {
-      return NextResponse.json({ error: 'Gemini rejected your API key. Check that it is valid and try again.' }, { status: 401 });
+    if (error instanceof Anthropic.AuthenticationError || error instanceof Anthropic.PermissionDeniedError) {
+      return NextResponse.json({ error: 'Anthropic rejected your API key. Check that it is valid and try again.' }, { status: 401 });
+    }
+    if (error instanceof Anthropic.RateLimitError) {
+      return NextResponse.json({ error: 'Your Anthropic API key hit its rate limit. Please wait and try again.' }, { status: 429 });
     }
     return NextResponse.json({ error: 'Failed to generate lesson' }, { status: 500 });
   }

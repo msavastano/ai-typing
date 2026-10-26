@@ -15,7 +15,7 @@ import {
   addCounts,
 } from '@/lib/typing-metrics';
 import { playCorrectSound, playErrorSound, playStreakSound } from '@/lib/audio';
-import { getGeminiKey } from '@/lib/gemini-key';
+import { getAnthropicKey } from '@/lib/anthropic-key';
 import { pickFallback } from '@/lib/lesson-variety';
 import {
   coerceKeyStats,
@@ -199,7 +199,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-gemini-api-key': getGeminiKey() ?? '',
+          'x-anthropic-api-key': getAnthropicKey() ?? '',
         },
         body: JSON.stringify({
           weakKeys,
@@ -225,7 +225,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
 
       if (response.status === 401) {
         const data = await response.json().catch(() => ({}));
-        setKeyError(data.error || 'Your Gemini API key is missing or invalid.');
+        setKeyError(data.error || 'Your Anthropic API key is missing or invalid.');
         setLoading(false);
         return;
       }
@@ -405,7 +405,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-gemini-api-key': getGeminiKey() ?? '',
+            'x-anthropic-api-key': getAnthropicKey() ?? '',
           },
           body: JSON.stringify({
             weakKeys,
@@ -428,7 +428,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
         });
         if (response.status === 401) {
           const data = await response.json().catch(() => ({}));
-          setKeyError(data.error || 'Your Gemini API key is missing or invalid.');
+          setKeyError(data.error || 'Your Anthropic API key is missing or invalid.');
           setChunkTransition(false);
           return;
         }
@@ -755,7 +755,7 @@ export default function TypingTest({ weakKeys, bigrams, avgWpm, avgAccuracy, tot
   if (keyError) {
     return (
       <div className="flex flex-col items-center justify-center py-32 space-y-6 text-center px-6">
-        <h2 className="font-serif text-2xl font-bold text-[#2a2620]">Gemini API key needed</h2>
+        <h2 className="font-serif text-2xl font-bold text-[#2a2620]">Anthropic API key needed</h2>
         <p className="font-serif text-[#7b7771] max-w-md leading-relaxed">{keyError}</p>
         <button
           onClick={onCancel}
